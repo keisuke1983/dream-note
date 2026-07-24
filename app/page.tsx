@@ -522,6 +522,33 @@ export default function App() {
     [data.todayAiSuggestions, todayAiContextHash]
   );
 
+  const homeMonthlyGoals = useMemo(
+    () =>
+      activeGoals
+        .filter((goal) => goal.level === "monthly")
+        .sort((a, b) => dateDistance(a.deadline) - dateDistance(b.deadline))
+        .slice(0, 3),
+    [activeGoals]
+  );
+
+  const homeYearGoals = useMemo(
+    () =>
+      activeGoals
+        .filter((goal) => goal.level === "one_year")
+        .sort((a, b) => dateDistance(a.deadline) - dateDistance(b.deadline))
+        .slice(0, 3),
+    [activeGoals]
+  );
+
+  const homeFutureGoals = useMemo(
+    () =>
+      activeGoals
+        .filter((goal) => goal.level === "three_year" || goal.level === "ten_year")
+        .sort((a, b) => dateDistance(a.deadline) - dateDistance(b.deadline))
+        .slice(0, 4),
+    [activeGoals]
+  );
+
   const currentWeek = useMemo(() => weekBounds(), []);
   const weeklyReviewInput = useMemo<WeeklyReviewInput>(() => {
     const goalMap = new Map(data.goals.map((goal) => [goal.id, goal]));
@@ -1128,10 +1155,10 @@ export default function App() {
 
       {tab === "home" && (
         <section className="space-y-4">
-          <HeroStats dreams={data.dreams} goals={data.goals} tasks={data.tasks} />
-          <Panel title="今日やることAI" icon={Sparkles}>
-            <TodayAiPanel
+          <Panel title="今日やること" icon={ListChecks}>
+            <HomeTodayPanel
               suggestion={todayAiSuggestion?.output_json}
+              todayTasks={todayTasks}
               tasks={data.tasks}
               dreams={data.dreams}
               goals={data.goals}
@@ -1143,34 +1170,17 @@ export default function App() {
                 setEditingTaskId(task.id);
                 setTab("tasks");
               }}
+              onArchive={archiveTask}
             />
           </Panel>
-          <Panel title="今日やること" icon={ListChecks}>
-            {todayTasks.length === 0 ? (
-              <Empty text="重要タスク、緊急タスク、期限が近いタスクを追加するとここに表示されます。" />
-            ) : (
-              <div className="grid gap-3 lg:grid-cols-2">
-                {todayTasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    dream={dreamById(task.dream_id)}
-                    goal={goalById(task.goal_id)}
-                    onComplete={() => void completeTask(task)}
-                    onEdit={() => {
-                      setEditingTaskId(task.id);
-                      setTab("tasks");
-                    }}
-                    onArchive={() => void archiveTask(task)}
-                  />
-                ))}
-              </div>
-            )}
+          <Panel title="1か月後の目標" icon={Target}>
+            <HomeGoalList goals={homeMonthlyGoals} dreams={data.dreams} emptyText="今月の目標を登録すると、今日やる理由が見えやすくなります。" />
           </Panel>
-          <Panel title="第2領域" icon={Flag}>
-            <p className="text-sm leading-6 text-ink/75">
-              緊急ではないが重要な行動を後回しにしないため、重要タスク、夢や目標に紐づく行動、最近動けていない夢に関係する行動を今日の候補に含めます。
-            </p>
+          <Panel title="1年後の目標" icon={CalendarDays}>
+            <HomeGoalList goals={homeYearGoals} dreams={data.dreams} emptyText="1年目標を登録すると、中期的な方向を確認できます。" />
+          </Panel>
+          <Panel title="将来の目標" icon={Flag}>
+            <HomeGoalList goals={homeFutureGoals} dreams={data.dreams} emptyText="3年・10年目標を登録すると、長期の方向性を確認できます。" compact />
           </Panel>
         </section>
       )}
@@ -1436,6 +1446,153 @@ function HeroStats({ dreams, goals, tasks }: { dreams: Dream[]; goals: Goal[]; t
         </div>
       ))}
     </section>
+  );
+}
+
+function HomeTodayPanel({
+  suggestion,
+  todayTasks,
+  tasks,
+  dreams,
+  goals,
+  loading,
+  canGenerate,
+  onGenerate,
+  onComplete,
+  onEdit,
+  onArchive
+}: {
+  suggestion?: TodayAiSuggestionOutput;
+  todayTasks: Task[];
+  tasks: Task[];
+  dreams: Dream[];
+  goals: Goal[];
+  loading: boolean;
+  canGenerate: boolean;
+  onGenerate: () => void;
+  onComplete: (task: Task) => Promise<void>;
+  onEdit: (task: Task) => void;
+  onArchive: (task: Task) => Promise<void>;
+}) {
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
+  const goalById = new Map(goals.map((goal) => [goal.id, goal]));
+  const recommendationByTaskId = new Map(suggestion?.recommendations.map((recommendation) => [recommendation.task_id, recommendation]) ?? []);
+  const aiOrderedTasks =
+    suggestion?.recommendations
+      .map((recommendation) => taskById.get(recommendation.task_id))
+      .filter((task): task is Task => Boolean(task)) ?? [];
+  const remainingTasks = todayTasks.filter((task) => !aiOrderedTasks.some((orderedTask) => orderedTask.id === task.id));
+  const orderedTasks = [...aiOrderedTasks, ...remainingTasks];
+  const primaryTask = orderedTasks[0];
+  const secondaryTasks = orderedTasks.slice(1, 5);
+
+  if (!primaryTask) {
+    return (
+      <div className="space-y-3">
+        <Empty text="今日やる候補はまだありません。重要タスク、期限つきタスク、夢に紐づくタスクを追加してください。" />
+        <button className="secondary-button" onClick={onGenerate} disabled={loading || !canGenerate}>
+          <Sparkles className="h-4 w-4" /> {loading ? "整理中" : "AIで候補を整理"}
+        </button>
+      </div>
+    );
+  }
+
+  const renderTask = (task: Task, prominent = false) => {
+    const dream = dreamById.get(task.dream_id ?? "");
+    const goal = goalById.get(task.goal_id ?? "");
+    const recommendation = recommendationByTaskId.get(task.id);
+    return (
+      <article key={task.id} className={`${prominent ? "border-ink bg-white p-4" : "border-mist bg-white/90 p-3"} rounded-lg border`}>
+        <div className="flex items-start gap-3">
+          <button
+            aria-label="タスクを完了"
+            onClick={() => void onComplete(task)}
+            className={`${prominent ? "h-12 w-12" : "h-10 w-10"} mt-0.5 flex shrink-0 items-center justify-center rounded-full border border-leaf text-leaf`}
+          >
+            <Check className="h-4 w-4" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap gap-2">
+              <span className="rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">{matrixLabel(task)}</span>
+              <span className={`rounded-full px-2 py-1 text-xs font-bold ${dateDistance(task.due_date) <= 3 ? "bg-dawn/20 text-clay" : "bg-mist text-moss"}`}>
+                {dueLabel(task.due_date)}
+              </span>
+              {recommendation && <span className="rounded-full bg-ink px-2 py-1 text-xs font-bold text-white">{recommendation.priority_label}</span>}
+            </div>
+            <h3 className={`${prominent ? "text-lg" : "text-base"} mt-2 font-bold text-ink`}>{task.title}</h3>
+            {recommendation?.reason && <p className="mt-1 text-sm leading-6 text-ink/70">{recommendation.reason}</p>}
+            {(dream || goal) && (
+              <p className="mt-2 text-xs leading-5 text-moss">
+                {goal?.title ?? "目標未紐づけ"}
+                {dream ? ` / ${dream.title}` : ""}
+              </p>
+            )}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button className="mini-button" onClick={() => onEdit(task)}>
+                <Edit3 className="h-3.5 w-3.5" /> 編集
+              </button>
+              <button className="mini-button" onClick={() => void onArchive(task)}>
+                <Archive className="h-3.5 w-3.5" /> 保留
+              </button>
+            </div>
+          </div>
+        </div>
+      </article>
+    );
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg bg-ink p-3 text-white">
+        <p className="text-xs font-semibold text-white/65">まずこれ</p>
+        <p className="mt-1 text-sm font-bold">{suggestion?.headline ?? "今日の最初の行動"}</p>
+      </div>
+      {renderTask(primaryTask, true)}
+      {secondaryTasks.length > 0 && <div className="grid gap-2 lg:grid-cols-2">{secondaryTasks.map((task) => renderTask(task))}</div>}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-xs leading-5 text-ink/55">
+          {suggestion?.summary ?? "期限、重要度、夢・目標とのつながりから今日の候補を表示しています。"}
+        </p>
+        <button className="secondary-button shrink-0 sm:w-auto" onClick={onGenerate} disabled={loading || !canGenerate}>
+          <Sparkles className="h-4 w-4" /> {loading ? "整理中" : suggestion ? "AI整理済み" : "AIで整理"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HomeGoalList({
+  goals,
+  dreams,
+  emptyText,
+  compact = false
+}: {
+  goals: Goal[];
+  dreams: Dream[];
+  emptyText: string;
+  compact?: boolean;
+}) {
+  const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
+  if (goals.length === 0) return <Empty text={emptyText} />;
+  return (
+    <div className={`${compact ? "space-y-2" : "grid gap-2 lg:grid-cols-3"}`}>
+      {goals.map((goal) => {
+        const dream = dreamById.get(goal.dream_id ?? "");
+        return (
+          <article key={goal.id} className="rounded-lg border border-mist bg-white/90 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-clay">{goalLabels[goal.level]}</p>
+                <h3 className="mt-1 line-clamp-2 font-bold text-ink">{goal.title}</h3>
+              </div>
+              <span className="shrink-0 rounded-full bg-mist px-2 py-1 text-xs font-semibold text-moss">{dueLabel(goal.deadline)}</span>
+            </div>
+            {dream && <p className="mt-2 line-clamp-1 text-xs text-moss">{dream.title}</p>}
+          </article>
+        );
+      })}
+    </div>
   );
 }
 
