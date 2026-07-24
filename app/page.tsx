@@ -161,7 +161,25 @@ const now = () => new Date().toISOString();
 const localUserId = "local-user";
 const storageKey = "ai-dream-note-phase1";
 
-const categories = ["仕事", "お金", "家族", "健康", "学習", "人間関係", "ライフスタイル", "社会貢献", "その他"];
+const dreamPillars = ["仕事", "家庭", "健康", "趣味", "教養", "財産"] as const;
+type DreamPillar = (typeof dreamPillars)[number];
+const uncategorizedPillar = "未分類";
+
+const legacyCategoryToPillar: Record<string, DreamPillar> = {
+  お金: "財産",
+  家族: "家庭",
+  学習: "教養"
+};
+
+function isDreamPillar(value?: string | null): value is DreamPillar {
+  return dreamPillars.includes(value as DreamPillar);
+}
+
+function displayDreamPillar(category?: string | null) {
+  if (isDreamPillar(category)) return category;
+  if (category && legacyCategoryToPillar[category]) return legacyCategoryToPillar[category];
+  return uncategorizedPillar;
+}
 
 const goalLabels: Record<Goal["level"], string> = {
   ten_year: "10年目標",
@@ -678,7 +696,7 @@ export default function App() {
       title: String(form.get("title") ?? ""),
       reason: String(form.get("reason") ?? ""),
       deadline,
-      category: String(form.get("category") ?? "その他"),
+      category: String(form.get("category") ?? dreamPillars[0]),
       desired_state: String(form.get("desired_state") ?? ""),
       status: existing?.status ?? "active",
       priority: existing?.priority ?? data.dreams.length + 1,
@@ -1083,7 +1101,7 @@ export default function App() {
         title: item.title,
         reason: item.memo,
         deadline: null,
-        category: "その他",
+        category: uncategorizedPillar,
         desired_state: "",
         status: "active",
         priority: data.dreams.length + 1,
@@ -1225,6 +1243,11 @@ export default function App() {
           <Panel title={editingDream ? "夢を編集" : "夢を入力"} icon={Sparkles}>
             <DreamForm dream={editingDream} onSubmit={saveDream} onCancel={() => setEditingDreamId(null)} />
           </Panel>
+          {data.dreams.length > 0 && (
+            <Panel title="6本の柱" icon={Flag}>
+              <DreamPillarOverview dreams={data.dreams} />
+            </Panel>
+          )}
           <Panel title="夢一覧" icon={Trophy}>
             {data.dreams.length === 0 ? (
               <Empty text="まずはひとつ、期限つきの夢を書いてみましょう。" />
@@ -1259,7 +1282,7 @@ export default function App() {
           )}
           <Panel title="AI夢整理" icon={Sparkles}>
             <p className="text-sm leading-6 text-ink/75">
-              Phase 2でOpenAI APIと接続します。夢の共通テーマ、カテゴリー、優先順位、次の行動候補を提案する予定です。
+              AIは主役ではなく補助です。今後、夢を6本の柱へ整理したり、5年・1年・月・週・今日へ分解する作業を手伝います。
             </p>
           </Panel>
         </section>
@@ -1897,6 +1920,34 @@ function TaskDueDateInput({ defaultValue }: { defaultValue?: DateValue }) {
   );
 }
 
+function PillarSelect({ currentCategory }: { currentCategory?: string }) {
+  const selected = currentCategory ? displayDreamPillar(currentCategory) : dreamPillars[0];
+  const legacyCategory = currentCategory && !isDreamPillar(currentCategory) && !legacyCategoryToPillar[currentCategory] ? currentCategory : null;
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {dreamPillars.map((pillar) => (
+          <label
+            key={pillar}
+            className="tap-highlight flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-mist bg-white px-3 py-2 text-sm font-bold text-ink transition has-[:checked]:border-moss has-[:checked]:bg-moss has-[:checked]:text-white"
+          >
+            <input className="sr-only" type="radio" name="category" value={pillar} defaultChecked={selected === pillar} />
+            {pillar}
+          </label>
+        ))}
+        {legacyCategory && (
+          <label className="tap-highlight col-span-2 flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-dashed border-clay/40 bg-mist px-3 py-2 text-sm font-bold text-clay transition has-[:checked]:border-clay has-[:checked]:bg-clay has-[:checked]:text-white sm:col-span-3">
+            <input className="sr-only" type="radio" name="category" value={legacyCategory} defaultChecked />
+            未分類（現在: {legacyCategory}）
+          </label>
+        )}
+      </div>
+      <p className="text-xs leading-5 text-ink/55">まず柱と達成日を決めると、5年・1年・月・週・今日へ逆算しやすくなります。</p>
+    </div>
+  );
+}
+
 function DreamForm({
   dream,
   onSubmit,
@@ -1908,27 +1959,70 @@ function DreamForm({
 }) {
   return (
     <form key={dream?.id ?? "new-dream"} onSubmit={onSubmit} className="space-y-4">
-      <Field label="カテゴリー">
-        <select name="category" defaultValue={dream?.category ?? "その他"} className="input">
-          {categories.map((category) => (
-            <option key={category}>{category}</option>
-          ))}
-        </select>
+      <Field label="6本の柱" hint="夢をどの領域で育てるかを選びます。">
+        <PillarSelect currentCategory={dream?.category} />
       </Field>
       <Field label="夢">
         <input name="title" required defaultValue={dream?.title} placeholder="例：1年後に起業する" className="input" />
       </Field>
+      <Field label="達成日">
+        <DeadlineInput name="deadline" defaultValue={dream?.deadline} />
+      </Field>
       <Field label="内容" hint="なぜ実現したいか、どんな状態になりたいかを短く書きます。">
         <textarea name="reason" rows={3} defaultValue={dream?.reason} placeholder="例：自分の強みを活かして、家族との時間も大切にできる働き方にしたい" className="input" />
-      </Field>
-      <Field label="期限">
-        <DeadlineInput name="deadline" defaultValue={dream?.deadline} />
       </Field>
       <Field label="達成したい状態">
         <textarea name="desired_state" rows={3} defaultValue={dream?.desired_state} placeholder="例：最初の商品を販売し、継続して収益が出始めている" className="input" />
       </Field>
       <FormActions editing={Boolean(dream)} saveLabel={dream ? "夢を更新" : "夢を保存"} onCancel={onCancel} />
     </form>
+  );
+}
+
+function DreamPillarOverview({ dreams }: { dreams: Dream[] }) {
+  const activeDreams = dreams.filter((dream) => dream.status !== "achieved");
+  const grouped = dreamPillars.map((pillar) => ({
+    pillar,
+    dreams: activeDreams.filter((dream) => displayDreamPillar(dream.category) === pillar)
+  }));
+  const uncategorizedDreams = activeDreams.filter((dream) => displayDreamPillar(dream.category) === uncategorizedPillar);
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {grouped.map(({ pillar, dreams: pillarDreams }) => (
+          <section key={pillar} className="rounded-lg border border-mist bg-white p-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-ink">{pillar}</h3>
+              <span className="rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">{pillarDreams.length}</span>
+            </div>
+            {pillarDreams.length > 0 ? (
+              <ul className="mt-2 space-y-1 text-xs leading-5 text-ink/70">
+                {pillarDreams.slice(0, 3).map((dream) => (
+                  <li key={dream.id} className="truncate">
+                    {dream.title}
+                    {dream.deadline ? ` / ${dream.deadline}` : ""}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-xs leading-5 text-ink/50">まだ夢がありません。</p>
+            )}
+          </section>
+        ))}
+      </div>
+      {uncategorizedDreams.length > 0 && (
+        <section className="rounded-lg border border-dashed border-clay/40 bg-white p-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-bold text-clay">未分類</h3>
+            <span className="rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">{uncategorizedDreams.length}</span>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-ink/60">
+            旧カテゴリーの夢です。編集時に6本の柱へ移せますが、保存済みデータは勝手に変更しません。
+          </p>
+        </section>
+      )}
+    </div>
   );
 }
 
@@ -1955,10 +2049,13 @@ function DreamCard({
     <article className="rounded-lg border border-mist bg-white p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-bold text-clay">{dream.category || "その他"}</p>
+          <p className="text-xs font-bold text-clay">
+            {displayDreamPillar(dream.category)}
+            {displayDreamPillar(dream.category) === uncategorizedPillar && dream.category && dream.category !== uncategorizedPillar ? `（${dream.category}）` : ""}
+          </p>
           <h3 className="mt-1 text-lg font-bold text-ink">{dream.title}</h3>
         </div>
-        <span className="shrink-0 rounded-full bg-mist px-2 py-1 text-xs font-semibold text-moss">{dream.deadline || "期限未設定"}</span>
+        <span className="shrink-0 rounded-full bg-mist px-2 py-1 text-xs font-semibold text-moss">達成日 {dream.deadline || "未設定"}</span>
       </div>
       <p className="mt-3 text-sm leading-6 text-ink/70">{dream.reason || dream.desired_state}</p>
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-semibold text-moss">
