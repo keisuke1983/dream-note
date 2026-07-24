@@ -46,9 +46,15 @@ create table if not exists public.tasks (
   important boolean not null default true,
   status text not null default 'todo',
   completed_at timestamptz,
+  reschedule_count integer not null default 0,
+  reschedule_history jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.tasks
+  add column if not exists reschedule_count integer not null default 0,
+  add column if not exists reschedule_history jsonb not null default '[]'::jsonb;
 
 alter table public.goals
   add column if not exists parent_goal_id uuid references public.goals(id) on delete set null;

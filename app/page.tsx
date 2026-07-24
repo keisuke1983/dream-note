@@ -68,8 +68,19 @@ type Task = {
   important: boolean;
   status: "todo" | "doing" | "done" | "archived";
   completed_at: string | null;
+  reschedule_count?: number;
+  reschedule_history?: RescheduleHistoryItem[];
   created_at: string;
   updated_at: string;
+};
+
+type RescheduleDestination = "tomorrow" | "this_week" | "next_week" | "this_month" | "custom" | "hold" | "drop";
+
+type RescheduleHistoryItem = {
+  rescheduled_at: string;
+  from_due_date: DateValue;
+  to_due_date: DateValue;
+  destination: RescheduleDestination;
 };
 
 type InboxItem = {
@@ -356,6 +367,23 @@ function weekBounds(date = today()) {
   return { weekStart, weekEnd: addDays(weekStart, 6) };
 }
 
+function monthEnd(date = today()) {
+  const base = new Date(`${date}T00:00:00`);
+  return new Date(base.getFullYear(), base.getMonth() + 1, 0).toISOString().slice(0, 10);
+}
+
+function nextWeekStart(date = today()) {
+  return addDays(weekBounds(date).weekEnd, 1);
+}
+
+function taskRescheduleCount(task: Task) {
+  return task.reschedule_count ?? task.reschedule_history?.length ?? 0;
+}
+
+function futureOrTomorrow(date: string) {
+  return dateDistance(date) > 0 ? date : addDays(today(), 1);
+}
+
 function sanitizeForDatabase<T extends Record<string, unknown>>(record: T) {
   return Object.fromEntries(
     Object.entries(record).map(([key, value]) => [key, value === "" ? null : value])
@@ -374,6 +402,7 @@ export default function App() {
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingInboxId, setEditingInboxId] = useState<string | null>(null);
+  const [reschedulingTaskId, setReschedulingTaskId] = useState<string | null>(null);
   const [aiLoadingDreamId, setAiLoadingDreamId] = useState<string | null>(null);
   const [aiTodayLoading, setAiTodayLoading] = useState(false);
   const [aiWeeklyLoading, setAiWeeklyLoading] = useState(false);
@@ -385,6 +414,7 @@ export default function App() {
   const editingGoal = data.goals.find((goal) => goal.id === editingGoalId);
   const editingTask = data.tasks.find((task) => task.id === editingTaskId);
   const editingInboxItem = data.inbox.find((item) => item.id === editingInboxId);
+  const reschedulingTask = data.tasks.find((task) => task.id === reschedulingTaskId);
   const activeGoals = data.goals.filter((goal) => goal.status !== "archived");
   const linkableDreams = data.dreams.filter((dream) => dream.status === "active");
 
@@ -803,6 +833,8 @@ export default function App() {
       important: form.get("important") === "on",
       status: existing?.status ?? "todo",
       completed_at: existing?.completed_at ?? null,
+      reschedule_count: existing?.reschedule_count ?? 0,
+      reschedule_history: existing?.reschedule_history ?? [],
       created_at: existing?.created_at ?? now(),
       updated_at: now()
     };
@@ -1031,6 +1063,8 @@ export default function App() {
       important: true,
       status: "todo",
       completed_at: null,
+      reschedule_count: 0,
+      reschedule_history: [],
       created_at: now(),
       updated_at: now()
     };
@@ -1090,6 +1124,8 @@ export default function App() {
         important: true,
         status: "todo",
         completed_at: null,
+        reschedule_count: 0,
+        reschedule_history: [],
         created_at: now(),
         updated_at: now()
       };
@@ -1123,6 +1159,72 @@ export default function App() {
     const updated: Task = { ...task, status: "archived", updated_at: now() };
     upsertLocal("tasks", updated);
     await persist("tasks", updated);
+  }
+
+  async function rescheduleTask(task: Task, destination: RescheduleDestination, customDate?: string) {
+    if (task.status === "done" || task.status === "archived") {
+      setNotice({ type: "error", message: "完了・アーカイブ済みタスクは転記できません。" });
+      return;
+    }
+
+    let nextDueDate: DateValue = null;
+    let nextStatus: Task["status"] = "todo";
+    if (destination === "tomorrow") nextDueDate = addDays(today(), 1);
+    if (destination === "this_week") nextDueDate = futureOrTomorrow(weekBounds().weekEnd);
+    if (destination === "next_week") nextDueDate = nextWeekStart();
+    if (destination === "this_month") nextDueDate = futureOrTomorrow(monthEnd());
+    if (destination === "custom") {
+      const normalized = normalizeDate(customDate ?? null);
+      if (normalized === "invalid") {
+        setNotice({ type: "error", message: "転記先の日付は YYYY-MM-DD 形式で入力してください。" });
+        return;
+      }
+      if (!normalized) {
+        setNotice({ type: "error", message: "転記先の日付を入力してください。" });
+        return;
+      }
+      nextDueDate = normalized;
+    }
+    if (destination === "hold" || destination === "drop") {
+      nextDueDate = null;
+      nextStatus = "archived";
+    }
+
+    const historyItem: RescheduleHistoryItem = {
+      rescheduled_at: now(),
+      from_due_date: task.due_date,
+      to_due_date: nextDueDate,
+      destination
+    };
+    const updated: Task = {
+      ...task,
+      due_date: nextDueDate,
+      status: nextStatus,
+      reschedule_count: taskRescheduleCount(task) + 1,
+      reschedule_history: [...(task.reschedule_history ?? []), historyItem],
+      updated_at: now()
+    };
+    if (!cloudMode && typeof window !== "undefined") {
+      const nextData: AppData = {
+        ...data,
+        tasks: data.tasks.map((item) => (item.id === updated.id ? updated : item))
+      };
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(nextData));
+      } catch {
+        setNotice({ type: "error", message: "ローカル保存に失敗しました。転記は反映していません。" });
+        return;
+      }
+      setData(nextData);
+      setReschedulingTaskId(null);
+      setNotice({ type: "success", message: destination === "drop" ? "もうやらないにしました。" : "転記しました。" });
+      return;
+    }
+    const saved = await persist("tasks", updated);
+    if (!saved) return;
+    upsertLocal("tasks", updated);
+    setReschedulingTaskId(null);
+    setNotice({ type: "success", message: destination === "drop" ? "もうやらないにしました。" : "転記しました。" });
   }
 
   async function archiveInboxItem(item: InboxItem) {
@@ -1181,6 +1283,8 @@ export default function App() {
         important: true,
         status: "todo",
         completed_at: null,
+        reschedule_count: 0,
+        reschedule_history: [],
         created_at: now(),
         updated_at: now()
       };
@@ -1263,6 +1367,7 @@ export default function App() {
                 setTab("tasks");
               }}
               onArchive={archiveTask}
+              onReschedule={(task) => setReschedulingTaskId(task.id)}
             />
           </Panel>
           <Panel title="1か月後の目標" icon={Target}>
@@ -1374,6 +1479,7 @@ export default function App() {
                 setTab("tasks");
               }}
               onArchive={archiveTask}
+              onReschedule={(task) => setReschedulingTaskId(task.id)}
             />
           </Panel>
         </section>
@@ -1454,6 +1560,14 @@ export default function App() {
             )}
           </Panel>
         </section>
+      )}
+
+      {reschedulingTask && (
+        <RescheduleDialog
+          task={reschedulingTask}
+          onClose={() => setReschedulingTaskId(null)}
+          onReschedule={(destination, customDate) => void rescheduleTask(reschedulingTask, destination, customDate)}
+        />
       )}
 
       <nav className="fixed inset-x-0 bottom-0 z-10 border-t border-mist bg-paper/95 px-0.5 py-2 backdrop-blur lg:bottom-auto lg:left-5 lg:top-5 lg:w-52 lg:rounded-lg lg:border lg:p-3 lg:shadow-soft">
@@ -1552,7 +1666,8 @@ function HomeTodayPanel({
   onGenerate,
   onComplete,
   onEdit,
-  onArchive
+  onArchive,
+  onReschedule
 }: {
   suggestion?: TodayAiSuggestionOutput;
   todayTasks: Task[];
@@ -1565,6 +1680,7 @@ function HomeTodayPanel({
   onComplete: (task: Task) => Promise<void>;
   onEdit: (task: Task) => void;
   onArchive: (task: Task) => Promise<void>;
+  onReschedule: (task: Task) => void;
 }) {
   const taskById = new Map(tasks.map((task) => [task.id, task]));
   const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
@@ -1611,6 +1727,7 @@ function HomeTodayPanel({
                 {dueLabel(task.due_date)}
               </span>
               {recommendation && <span className="rounded-full bg-ink px-2 py-1 text-xs font-bold text-white">{recommendation.priority_label}</span>}
+              {taskRescheduleCount(task) > 0 && <span className="rounded-full bg-dawn/20 px-2 py-1 text-xs font-bold text-clay">転記{taskRescheduleCount(task)}回</span>}
             </div>
             <h3 className={`${prominent ? "text-lg" : "text-base"} mt-2 font-bold text-ink`}>{task.title}</h3>
             {recommendation?.reason && <p className="mt-1 text-sm leading-6 text-ink/70">{recommendation.reason}</p>}
@@ -1623,6 +1740,9 @@ function HomeTodayPanel({
             <div className="mt-3 flex flex-wrap gap-2">
               <button className="mini-button" onClick={() => onEdit(task)}>
                 <Edit3 className="h-3.5 w-3.5" /> 編集
+              </button>
+              <button className="mini-button" onClick={() => onReschedule(task)}>
+                <CalendarDays className="h-3.5 w-3.5" /> 転記
               </button>
               <button className="mini-button" onClick={() => void onArchive(task)}>
                 <Archive className="h-3.5 w-3.5" /> 保留
@@ -2570,13 +2690,91 @@ function TaskForm({
   );
 }
 
+function RescheduleDialog({
+  task,
+  onClose,
+  onReschedule
+}: {
+  task: Task;
+  onClose: () => void;
+  onReschedule: (destination: RescheduleDestination, customDate?: string) => void;
+}) {
+  const [customDate, setCustomDate] = useState("");
+  const quickDestinations: Array<{ key: RescheduleDestination; label: string; description: string }> = [
+    { key: "tomorrow", label: "明日", description: addDays(today(), 1) },
+    { key: "this_week", label: "今週中", description: futureOrTomorrow(weekBounds().weekEnd) },
+    { key: "next_week", label: "来週", description: nextWeekStart() },
+    { key: "this_month", label: "今月", description: futureOrTomorrow(monthEnd()) }
+  ];
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-end bg-ink/35 px-3 pb-3 pt-12 sm:items-center sm:justify-center" role="dialog" aria-modal="true">
+      <div className="w-full max-w-lg rounded-lg bg-white p-4 shadow-soft">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-clay">未完了の転記</p>
+            <h2 className="mt-1 break-words text-lg font-bold text-ink">{task.title}</h2>
+            <p className="mt-1 text-xs text-ink/55">
+              現在: {dueLabel(task.due_date)} / 転記{taskRescheduleCount(task)}回
+            </p>
+          </div>
+          <button className="mini-button shrink-0" onClick={onClose} aria-label="閉じる">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          {quickDestinations.map((destination) => (
+            <button key={destination.key} className="secondary-button justify-start" onClick={() => onReschedule(destination.key)}>
+              <CalendarDays className="h-4 w-4" />
+              <span className="text-left">
+                <span className="block">{destination.label}</span>
+                <span className="block text-[11px] font-semibold text-ink/50">{destination.description}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <form
+          className="mt-3 flex flex-col gap-2 sm:flex-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onReschedule("custom", customDate);
+          }}
+        >
+          <input
+            value={customDate}
+            onChange={(event) => setCustomDate(event.target.value)}
+            placeholder="YYYY-MM-DD"
+            inputMode="numeric"
+            className="input"
+          />
+          <button className="primary-button shrink-0" type="submit">
+            日付指定
+          </button>
+        </form>
+
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <button className="secondary-button justify-start" onClick={() => onReschedule("hold")}>
+            <Archive className="h-4 w-4" /> いったん保留
+          </button>
+          <button className="secondary-button justify-start" onClick={() => onReschedule("drop")}>
+            <X className="h-4 w-4" /> もうやらない
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TaskCard({
   task,
   dream,
   goal,
   onComplete,
   onEdit,
-  onArchive
+  onArchive,
+  onReschedule
 }: {
   task: Task;
   dream?: Dream;
@@ -2584,6 +2782,7 @@ function TaskCard({
   onComplete: () => void;
   onEdit?: () => void;
   onArchive?: () => void;
+  onReschedule?: () => void;
 }) {
   return (
     <article className="rounded-lg border border-mist bg-white p-4">
@@ -2601,6 +2800,7 @@ function TaskCard({
             <span className={`rounded-full px-2 py-1 text-xs font-bold ${dateDistance(task.due_date) <= 3 ? "bg-dawn/20 text-clay" : "bg-mist text-moss"}`}>
               {dueLabel(task.due_date)}
             </span>
+            {taskRescheduleCount(task) > 0 && <span className="rounded-full bg-dawn/20 px-2 py-1 text-xs font-bold text-clay">転記{taskRescheduleCount(task)}回</span>}
           </div>
           <h3 className="mt-2 font-bold text-ink">{task.title}</h3>
           {task.memo && <p className="mt-1 text-sm leading-6 text-ink/65">{task.memo}</p>}
@@ -2613,6 +2813,11 @@ function TaskCard({
             {onEdit && (
               <button className="mini-button" onClick={onEdit}>
                 <Edit3 className="h-3.5 w-3.5" /> 編集
+              </button>
+            )}
+            {onReschedule && (
+              <button className="mini-button" onClick={onReschedule}>
+                <CalendarDays className="h-3.5 w-3.5" /> 転記
               </button>
             )}
             {onArchive && (
@@ -2633,7 +2838,8 @@ function Matrix({
   goals,
   onComplete,
   onEdit,
-  onArchive
+  onArchive,
+  onReschedule
 }: {
   tasks: Task[];
   dreams: Dream[];
@@ -2641,6 +2847,7 @@ function Matrix({
   onComplete: (task: Task) => Promise<void>;
   onEdit: (task: Task) => void;
   onArchive: (task: Task) => Promise<void>;
+  onReschedule: (task: Task) => void;
 }) {
   const groups = [
     ["緊急かつ重要", tasks.filter((task) => task.urgent && task.important)],
@@ -2670,6 +2877,7 @@ function Matrix({
                   onComplete={() => void onComplete(task)}
                   onEdit={() => onEdit(task)}
                   onArchive={() => void onArchive(task)}
+                  onReschedule={() => onReschedule(task)}
                 />
               ))
             )}
