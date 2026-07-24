@@ -46,9 +46,10 @@ type Goal = {
   id: string;
   user_id: string;
   dream_id: string | null;
+  parent_goal_id?: string | null;
   title: string;
   description: string;
-  level: "ten_year" | "three_year" | "one_year" | "monthly" | "daily";
+  level: GoalLevel;
   deadline: DateValue;
   status: "todo" | "doing" | "done" | "archived";
   created_at: string;
@@ -155,6 +156,7 @@ type AppData = {
 type CollectionKey = "dreams" | "goals" | "tasks" | "inbox" | "aiSuggestions" | "todayAiSuggestions" | "weeklyAiReviews" | "reflections";
 type Tab = "home" | "dreams" | "goals" | "tasks" | "matrix" | "inbox" | "reflect" | "settings";
 type Notice = { type: "success" | "error"; message: string };
+type GoalLevel = "five_year" | "one_year" | "monthly" | "weekly" | "daily" | "ten_year" | "three_year";
 
 const today = () => new Date().toISOString().slice(0, 10);
 const now = () => new Date().toISOString();
@@ -181,12 +183,45 @@ function displayDreamPillar(category?: string | null) {
   return uncategorizedPillar;
 }
 
-const goalLabels: Record<Goal["level"], string> = {
-  ten_year: "10年目標",
-  three_year: "3年目標",
+function parentGoalId(goal: Goal) {
+  return goal.parent_goal_id ?? null;
+}
+
+function sortGoalsByPlan(a: Goal, b: Goal) {
+  return goalLevelOrder[a.level] - goalLevelOrder[b.level] || dateDistance(a.deadline) - dateDistance(b.deadline) || a.created_at.localeCompare(b.created_at);
+}
+
+const newGoalLevels = ["five_year", "one_year", "monthly", "weekly", "daily"] as const;
+const legacyGoalLevels = ["ten_year", "three_year"] as const;
+
+const goalLabels: Record<GoalLevel, string> = {
+  five_year: "5年計画",
   one_year: "1年目標",
   monthly: "今月目標",
-  daily: "今日の行動"
+  weekly: "今週目標",
+  daily: "今日の行動",
+  ten_year: "旧10年目標",
+  three_year: "旧3年目標"
+};
+
+const goalLevelOrder: Record<GoalLevel, number> = {
+  five_year: 1,
+  one_year: 2,
+  monthly: 3,
+  weekly: 4,
+  daily: 5,
+  ten_year: 0,
+  three_year: 0
+};
+
+const parentGoalLevelsByLevel: Record<GoalLevel, GoalLevel[]> = {
+  five_year: [],
+  one_year: ["five_year", "ten_year", "three_year"],
+  monthly: ["one_year", "five_year", "ten_year", "three_year"],
+  weekly: ["monthly", "one_year", "five_year", "ten_year", "three_year"],
+  daily: ["weekly", "monthly", "one_year", "five_year", "ten_year", "three_year"],
+  ten_year: [],
+  three_year: ["ten_year", "five_year"]
 };
 
 const inboxKindLabels: Record<InboxItem["kind"], string> = {
@@ -576,7 +611,7 @@ export default function App() {
   const homeFutureGoals = useMemo(
     () =>
       activeGoals
-        .filter((goal) => goal.level === "three_year" || goal.level === "ten_year")
+        .filter((goal) => goal.level === "five_year" || goal.level === "three_year" || goal.level === "ten_year")
         .sort((a, b) => dateDistance(a.deadline) - dateDistance(b.deadline))
         .slice(0, 4),
     [activeGoals]
@@ -725,6 +760,7 @@ export default function App() {
       id: existing?.id ?? crypto.randomUUID(),
       user_id: userId,
       dream_id: normalizeId(form.get("dream_id")),
+      parent_goal_id: normalizeId(form.get("parent_goal_id")),
       title: String(form.get("title") ?? ""),
       description: String(form.get("description") ?? ""),
       level: String(form.get("level") ?? "monthly") as Goal["level"],
@@ -965,6 +1001,7 @@ export default function App() {
       id: crypto.randomUUID(),
       user_id: userId,
       dream_id: suggestion.dream_id,
+      parent_goal_id: null,
       title: milestone.title,
       description: `${milestone.description}\n目安: ${milestone.target_period}`,
       level: milestone.suggested_goal_level,
@@ -1028,6 +1065,7 @@ export default function App() {
         id: crypto.randomUUID(),
         user_id: userId,
         dream_id: suggestion.dream_id,
+        parent_goal_id: null,
         title: milestone.title,
         description: `${milestone.description}\n目安: ${milestone.target_period}`,
         level: milestone.suggested_goal_level,
@@ -1117,6 +1155,7 @@ export default function App() {
         id: crypto.randomUUID(),
         user_id: userId,
         dream_id: null,
+        parent_goal_id: null,
         title: item.title,
         description: item.memo,
         level: "monthly",
@@ -1233,7 +1272,7 @@ export default function App() {
             <HomeGoalList goals={homeYearGoals} dreams={data.dreams} emptyText="1年目標を登録すると、中期的な方向を確認できます。" />
           </Panel>
           <Panel title="将来の目標" icon={Flag}>
-            <HomeGoalList goals={homeFutureGoals} dreams={data.dreams} emptyText="3年・10年目標を登録すると、長期の方向性を確認できます。" compact />
+            <HomeGoalList goals={homeFutureGoals} dreams={data.dreams} emptyText="5年計画を登録すると、長期の方向性を確認できます。" compact />
           </Panel>
         </section>
       )}
@@ -1291,23 +1330,18 @@ export default function App() {
       {tab === "goals" && (
         <section className="space-y-4">
           <Panel title={editingGoal ? "目標を編集" : "目標設定"} icon={Target}>
-            <GoalForm dreams={linkableDreams} goal={editingGoal} onSubmit={saveGoal} onCancel={() => setEditingGoalId(null)} />
+            <GoalForm dreams={linkableDreams} goals={activeGoals} goal={editingGoal} onSubmit={saveGoal} onCancel={() => setEditingGoalId(null)} />
           </Panel>
-          <Panel title="目標一覧" icon={CalendarDays}>
+          <Panel title="計画の流れ" icon={CalendarDays}>
             {activeGoals.length === 0 ? (
-              <Empty text="夢を10年、3年、1年、今月、今日の行動へ分解します。" />
+              <Empty text="夢を5年、1年、今月、今週、今日へ分解します。全部を一度に作らなくても大丈夫です。" />
             ) : (
-              <div className="grid gap-3 lg:grid-cols-2">
-                {activeGoals.map((goal) => (
-                  <GoalCard
-                    key={goal.id}
-                    goal={goal}
-                    dream={dreamById(goal.dream_id)}
-                    onEdit={() => setEditingGoalId(goal.id)}
-                    onArchive={() => void archiveGoal(goal)}
-                  />
-                ))}
-              </div>
+              <GoalPlanFlow
+                goals={activeGoals}
+                dreams={data.dreams}
+                onEdit={(goal) => setEditingGoalId(goal.id)}
+                onArchive={(goal) => void archiveGoal(goal)}
+              />
             )}
           </Panel>
         </section>
@@ -2215,9 +2249,9 @@ function AiSuggestionPanel({
                           updateMilestone(index, { suggested_goal_level: event.target.value as Goal["level"] })
                         }
                       >
-                        {Object.entries(goalLabels).map(([value, label]) => (
+                        {newGoalLevels.map((value) => (
                           <option key={value} value={value}>
-                            {label}
+                            {goalLabels[value]}
                           </option>
                         ))}
                       </select>
@@ -2289,19 +2323,36 @@ function AiSuggestionPanel({
 
 function GoalForm({
   dreams,
+  goals,
   goal,
   onSubmit,
   onCancel
 }: {
   dreams: Dream[];
+  goals: Goal[];
   goal?: Goal;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
 }) {
+  const [selectedDreamId, setSelectedDreamId] = useState(goal?.dream_id ?? "");
+  const [selectedLevel, setSelectedLevel] = useState<GoalLevel>(goal?.level ?? "monthly");
+
+  useEffect(() => {
+    setSelectedDreamId(goal?.dream_id ?? "");
+    setSelectedLevel(goal?.level ?? "monthly");
+  }, [goal?.id, goal?.dream_id, goal?.level]);
+
+  const parentCandidates = goals
+    .filter((candidate) => candidate.id !== goal?.id)
+    .filter((candidate) => candidate.status !== "archived")
+    .filter((candidate) => !selectedDreamId || !candidate.dream_id || candidate.dream_id === selectedDreamId)
+    .filter((candidate) => parentGoalLevelsByLevel[selectedLevel]?.includes(candidate.level))
+    .sort(sortGoalsByPlan);
+
   return (
     <form key={goal?.id ?? "new-goal"} onSubmit={onSubmit} className="space-y-4">
       <Field label="対象の夢">
-        <select name="dream_id" defaultValue={goal?.dream_id ?? ""} className="input">
+        <select name="dream_id" value={selectedDreamId} onChange={(event) => setSelectedDreamId(event.target.value)} className="input">
           <option value="">未紐づけ</option>
           {dreams.map((dream) => (
             <option key={dream.id} value={dream.id}>
@@ -2318,31 +2369,116 @@ function GoalForm({
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="目標の位置づけ" hint="夢から逆算して、いつ達成したい目標かを選びます。迷ったら今月目標でOKです。">
-          <select name="level" defaultValue={goal?.level ?? "monthly"} className="input">
-            {Object.entries(goalLabels).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
+          <select name="level" value={selectedLevel} onChange={(event) => setSelectedLevel(event.target.value as GoalLevel)} className="input">
+            {newGoalLevels.map((level) => (
+              <option key={level} value={level}>
+                {goalLabels[level]}
               </option>
             ))}
+            {goal && legacyGoalLevels.includes(goal.level as (typeof legacyGoalLevels)[number]) && (
+              <option value={goal.level}>{goalLabels[goal.level]}</option>
+            )}
           </select>
         </Field>
         <Field label="目標の期限" hint="この目標をいつまでに終わらせるか。夢の期限より手前の日付にします。">
           <DeadlineInput name="deadline" defaultValue={goal?.deadline} />
         </Field>
       </div>
+      <Field label="つながる上位目標" hint="未選択でも保存できます。あとから5年→1年→月→週→今日につなげられます。">
+        <select key={`${goal?.id ?? "new"}-${selectedDreamId}-${selectedLevel}`} name="parent_goal_id" defaultValue={goal?.parent_goal_id ?? ""} className="input">
+          <option value="">未設定</option>
+          {parentCandidates.map((candidate) => (
+            <option key={candidate.id} value={candidate.id}>
+              {goalLabels[candidate.level]}・{candidate.title}
+            </option>
+          ))}
+        </select>
+      </Field>
       <FormActions editing={Boolean(goal)} saveLabel={goal ? "目標を更新" : "目標を保存"} onCancel={onCancel} />
     </form>
+  );
+}
+
+function GoalPlanFlow({
+  goals,
+  dreams,
+  onEdit,
+  onArchive
+}: {
+  goals: Goal[];
+  dreams: Dream[];
+  onEdit: (goal: Goal) => void;
+  onArchive: (goal: Goal) => void;
+}) {
+  const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
+  const goalById = new Map(goals.map((goal) => [goal.id, goal]));
+  const activeNewGoals = goals.filter((goal) => (newGoalLevels as readonly string[]).includes(goal.level)).sort(sortGoalsByPlan);
+  const legacyGoals = goals.filter((goal) => (legacyGoalLevels as readonly string[]).includes(goal.level)).sort(sortGoalsByPlan);
+
+  return (
+    <div className="space-y-3">
+      {newGoalLevels.map((level) => {
+        const goalsInLevel = activeNewGoals.filter((goal) => goal.level === level);
+        return (
+          <section key={level} className="rounded-lg border border-mist bg-mist/40 p-3">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="font-bold text-ink">{goalLabels[level]}</h3>
+              <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-moss">{goalsInLevel.length}</span>
+            </div>
+            {goalsInLevel.length > 0 ? (
+              <div className="grid gap-3 lg:grid-cols-2">
+                {goalsInLevel.map((goal) => (
+                  <GoalCard
+                    key={goal.id}
+                    goal={goal}
+                    dream={dreamById.get(goal.dream_id ?? "")}
+                    parentGoal={goalById.get(parentGoalId(goal) ?? "")}
+                    onEdit={() => onEdit(goal)}
+                    onArchive={() => onArchive(goal)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm leading-6 text-ink/55">まだありません。必要な階層だけ、あとから追加できます。</p>
+            )}
+          </section>
+        );
+      })}
+      {legacyGoals.length > 0 && (
+        <section className="rounded-lg border border-dashed border-clay/40 bg-white p-3">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h3 className="font-bold text-clay">旧階層</h3>
+            <span className="rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">{legacyGoals.length}</span>
+          </div>
+          <p className="mb-3 text-xs leading-5 text-ink/60">旧10年・旧3年の目標です。データは残し、編集時に新しい階層へ移せます。</p>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {legacyGoals.map((goal) => (
+              <GoalCard
+                key={goal.id}
+                goal={goal}
+                dream={dreamById.get(goal.dream_id ?? "")}
+                parentGoal={goalById.get(parentGoalId(goal) ?? "")}
+                onEdit={() => onEdit(goal)}
+                onArchive={() => onArchive(goal)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
   );
 }
 
 function GoalCard({
   goal,
   dream,
+  parentGoal,
   onEdit,
   onArchive
 }: {
   goal: Goal;
   dream?: Dream;
+  parentGoal?: Goal;
   onEdit: () => void;
   onArchive: () => void;
 }) {
@@ -2357,6 +2493,7 @@ function GoalCard({
       </div>
       {goal.description && <p className="mt-2 text-sm leading-6 text-ink/70">{goal.description}</p>}
       <p className="mt-3 text-xs text-moss">夢：{dream?.title ?? "未紐づけ"}</p>
+      <p className="mt-1 text-xs text-ink/55">つながる目標：{parentGoal ? `${goalLabels[parentGoal.level]}・${parentGoal.title}` : "未設定"}</p>
       <div className="mt-4 flex flex-wrap gap-2">
         <button className="mini-button" onClick={onEdit}>
           <Edit3 className="h-3.5 w-3.5" /> 編集

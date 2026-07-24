@@ -24,6 +24,7 @@ create table if not exists public.goals (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references auth.users(id) on delete cascade not null,
   dream_id uuid references public.dreams(id) on delete set null,
+  parent_goal_id uuid references public.goals(id) on delete set null,
   title text not null,
   description text,
   level text not null,
@@ -48,6 +49,9 @@ create table if not exists public.tasks (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.goals
+  add column if not exists parent_goal_id uuid references public.goals(id) on delete set null;
 
 create table if not exists public.inbox_items (
   id uuid primary key default gen_random_uuid(),
