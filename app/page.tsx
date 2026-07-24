@@ -213,12 +213,7 @@ const initialData = (): AppData => ({
   reflections: []
 });
 
-function normalizeDate(value: FormDataEntryValue | null): DateValue {
-  const text = String(value ?? "").trim();
-  return text.length > 0 ? text : null;
-}
-
-function normalizeTaskDueDate(value: FormDataEntryValue | null): DateValue | "invalid" {
+function normalizeDate(value: FormDataEntryValue | null): DateValue | "invalid" {
   const text = String(value ?? "").trim();
   if (!text) return null;
   const normalized = text.replace(/[/.]/g, "-");
@@ -672,12 +667,17 @@ export default function App() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const existing = editingDream;
+    const deadline = normalizeDate(form.get("deadline"));
+    if (deadline === "invalid") {
+      setNotice({ type: "error", message: "期限は YYYY-MM-DD 形式で入力してください。" });
+      return;
+    }
     const dream: Dream = {
       id: existing?.id ?? crypto.randomUUID(),
       user_id: userId,
       title: String(form.get("title") ?? ""),
       reason: String(form.get("reason") ?? ""),
-      deadline: normalizeDate(form.get("deadline")),
+      deadline,
       category: String(form.get("category") ?? "その他"),
       desired_state: String(form.get("desired_state") ?? ""),
       status: existing?.status ?? "active",
@@ -685,10 +685,11 @@ export default function App() {
       created_at: existing?.created_at ?? now(),
       updated_at: now()
     };
+    const saved = await persist("dreams", dream);
+    if (!saved) return;
     upsertLocal("dreams", dream);
-    await persist("dreams", dream);
     setEditingDreamId(null);
-    event.currentTarget.reset();
+    if (!existing) event.currentTarget.reset();
     setNotice({ type: "success", message: existing ? "夢を更新しました。" : "夢を保存しました。" });
     setTab("dreams");
   }
@@ -697,6 +698,11 @@ export default function App() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const existing = editingGoal;
+    const deadline = normalizeDate(form.get("deadline"));
+    if (deadline === "invalid") {
+      setNotice({ type: "error", message: "期限は YYYY-MM-DD 形式で入力してください。" });
+      return;
+    }
     const goal: Goal = {
       id: existing?.id ?? crypto.randomUUID(),
       user_id: userId,
@@ -704,15 +710,16 @@ export default function App() {
       title: String(form.get("title") ?? ""),
       description: String(form.get("description") ?? ""),
       level: String(form.get("level") ?? "monthly") as Goal["level"],
-      deadline: normalizeDate(form.get("deadline")),
+      deadline,
       status: existing?.status ?? "todo",
       created_at: existing?.created_at ?? now(),
       updated_at: now()
     };
+    const saved = await persist("goals", goal);
+    if (!saved) return;
     upsertLocal("goals", goal);
-    await persist("goals", goal);
     setEditingGoalId(null);
-    event.currentTarget.reset();
+    if (!existing) event.currentTarget.reset();
     setNotice({ type: "success", message: existing ? "目標を更新しました。" : "目標を保存しました。" });
   }
 
@@ -725,7 +732,7 @@ export default function App() {
     const selectedDreamId = normalizeId(form.get("dream_id"));
     const coherentGoalId = selectedGoal && (!selectedDreamId || !selectedGoal.dream_id || selectedGoal.dream_id === selectedDreamId) ? selectedGoal.id : null;
     const coherentDreamId = selectedGoal?.dream_id ?? selectedDreamId;
-    const dueDate = normalizeTaskDueDate(form.get("due_date"));
+    const dueDate = normalizeDate(form.get("due_date"));
     if (dueDate === "invalid") {
       setNotice({ type: "error", message: "期限は YYYY-MM-DD 形式で入力してください。" });
       return;
@@ -768,10 +775,11 @@ export default function App() {
       created_at: existing?.created_at ?? now(),
       updated_at: now()
     };
+    const saved = await persist("inbox_items", item);
+    if (!saved) return;
     upsertLocal("inbox", item);
-    await persist("inbox_items", item);
     setEditingInboxId(null);
-    event.currentTarget.reset();
+    if (!existing) event.currentTarget.reset();
     setNotice({ type: "success", message: existing ? "メモを更新しました。" : "メモを保存しました。" });
   }
 
@@ -1142,8 +1150,9 @@ export default function App() {
       created_at: todayReflection?.created_at ?? now(),
       updated_at: now()
     };
+    const saved = await persist("daily_reflections", reflection);
+    if (!saved) return;
     upsertLocal("reflections", reflection);
-    await persist("daily_reflections", reflection);
     setNotice({ type: "success", message: "今日の振り返りを保存しました。" });
   }
 
@@ -1810,11 +1819,34 @@ function dateAfterYears(years: number) {
 }
 
 function DeadlineInput({ name, defaultValue }: { name: string; defaultValue?: DateValue }) {
-  const inputRef = useRef<HTMLInputElement>(null);
+  const textRef = useRef<HTMLInputElement>(null);
+  const dateRef = useRef<HTMLInputElement>(null);
+
+  const setValue = (value: string) => {
+    if (textRef.current) textRef.current.value = value;
+    if (dateRef.current) dateRef.current.value = value;
+  };
 
   return (
     <div className="space-y-2">
-      <input ref={inputRef} name={name} type="date" defaultValue={defaultValue ?? ""} className="input" />
+      <input
+        ref={textRef}
+        name={name}
+        type="text"
+        inputMode="numeric"
+        defaultValue={defaultValue ?? ""}
+        placeholder="YYYY-MM-DD"
+        pattern="\d{4}[-/.]\d{1,2}[-/.]\d{1,2}"
+        className="input"
+      />
+      <input
+        ref={dateRef}
+        type="date"
+        defaultValue={defaultValue ?? ""}
+        aria-label="カレンダーで期限を選択"
+        className="input"
+        onChange={(event) => setValue(event.target.value)}
+      />
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
         {deadlineShortcuts.map((shortcut) => (
           <button
@@ -1822,7 +1854,7 @@ function DeadlineInput({ name, defaultValue }: { name: string; defaultValue?: Da
             type="button"
             className="tap-highlight min-h-10 rounded-lg bg-mist px-2 py-2 text-xs font-bold text-moss transition active:scale-[0.99]"
             onClick={() => {
-              if (inputRef.current) inputRef.current.value = dateAfterYears(shortcut.years);
+              setValue(dateAfterYears(shortcut.years));
             }}
           >
             {shortcut.label}
