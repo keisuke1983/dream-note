@@ -21,7 +21,7 @@ import {
   type LucideIcon
 } from "lucide-react";
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { AiDreamSuggestionOutput } from "../lib/aiDream";
 import type { TodayAiSuggestionInput, TodayAiSuggestionOutput } from "../lib/aiToday";
 import type { WeeklyReviewInput, WeeklyReviewOutput } from "../lib/aiWeekly";
@@ -174,16 +174,16 @@ const goalLabels: Record<Goal["level"], string> = {
 const inboxKindLabels: Record<InboxItem["kind"], string> = {
   someday: "いつか",
   idea: "アイデア",
-  thought: "思いつき"
+  thought: "気づき"
 };
 
 const navItems: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: "home", label: "ホーム", icon: Home },
   { key: "dreams", label: "夢", icon: Sparkles },
   { key: "goals", label: "目標", icon: Target },
-  { key: "tasks", label: "入力", icon: Plus },
+  { key: "tasks", label: "タスク", icon: Plus },
   { key: "matrix", label: "4分類", icon: ClipboardList },
-  { key: "inbox", label: "Inbox", icon: Inbox },
+  { key: "inbox", label: "メモ", icon: Inbox },
   { key: "reflect", label: "振返り", icon: Moon },
   { key: "settings", label: "設定", icon: Settings }
 ];
@@ -642,6 +642,7 @@ export default function App() {
     await persist("dreams", dream);
     setEditingDreamId(null);
     event.currentTarget.reset();
+    setNotice({ type: "success", message: existing ? "夢を更新しました。" : "夢を保存しました。" });
     setTab("dreams");
   }
 
@@ -665,6 +666,7 @@ export default function App() {
     await persist("goals", goal);
     setEditingGoalId(null);
     event.currentTarget.reset();
+    setNotice({ type: "success", message: existing ? "目標を更新しました。" : "目標を保存しました。" });
   }
 
   async function saveTask(event: FormEvent<HTMLFormElement>) {
@@ -695,6 +697,7 @@ export default function App() {
     await persist("tasks", task);
     setEditingTaskId(null);
     event.currentTarget.reset();
+    setNotice({ type: "success", message: existing ? "タスクを更新しました。" : "タスクを保存しました。" });
     setTab("matrix");
   }
 
@@ -716,6 +719,7 @@ export default function App() {
     await persist("inbox_items", item);
     setEditingInboxId(null);
     event.currentTarget.reset();
+    setNotice({ type: "success", message: existing ? "メモを更新しました。" : "メモを保存しました。" });
   }
 
   async function clarifyDreamWithAi(dream: Dream) {
@@ -1275,10 +1279,10 @@ export default function App() {
 
       {tab === "inbox" && (
         <section className="space-y-4">
-          <Panel title={editingInboxItem ? "Inboxを編集" : "Inbox"} icon={Inbox}>
+          <Panel title={editingInboxItem ? "メモ・気づきを編集" : "メモ・気づき"} icon={Inbox}>
             <InboxForm item={editingInboxItem} onSubmit={saveInboxItem} onCancel={() => setEditingInboxId(null)} />
           </Panel>
-          <Panel title="未整理メモ" icon={Archive}>
+          <Panel title="未整理のメモ・気づき" icon={Archive}>
             <InboxList
               items={data.inbox.filter((item) => item.status === "open")}
               onEdit={(item) => setEditingInboxId(item.id)}
@@ -1403,12 +1407,13 @@ function Panel({ title, icon: Icon, children }: { title: string; icon: LucideIco
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <label className="block">
-      <span className="mb-1 block text-sm font-bold text-ink">{label}</span>
+    <div className="block">
+      <label className="mb-1 block text-sm font-bold text-ink">{label}</label>
+      {hint && <p className="mb-2 text-xs leading-5 text-ink/55">{hint}</p>}
       {children}
-    </label>
+    </div>
   );
 }
 
@@ -1604,6 +1609,48 @@ function ReviewBlock({ title, items }: { title: string; items: string[] }) {
   );
 }
 
+const deadlineShortcuts = [
+  { label: "1年後", years: 1 },
+  { label: "3年後", years: 3 },
+  { label: "5年後", years: 5 },
+  { label: "10年後", years: 10 },
+  { label: "20年後", years: 20 },
+  { label: "30年後", years: 30 }
+];
+
+function dateAfterYears(years: number) {
+  const date = new Date();
+  date.setFullYear(date.getFullYear() + years);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function DeadlineInput({ name, defaultValue }: { name: string; defaultValue?: DateValue }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <div className="space-y-2">
+      <input ref={inputRef} name={name} type="date" defaultValue={defaultValue ?? ""} className="input" />
+      <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+        {deadlineShortcuts.map((shortcut) => (
+          <button
+            key={shortcut.years}
+            type="button"
+            className="tap-highlight min-h-10 rounded-lg bg-mist px-2 py-2 text-xs font-bold text-moss transition active:scale-[0.99]"
+            onClick={() => {
+              if (inputRef.current) inputRef.current.value = dateAfterYears(shortcut.years);
+            }}
+          >
+            {shortcut.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs leading-5 text-ink/55">日付を直接入力しても、上のボタンでざっくり決めてもOKです。</p>
+    </div>
+  );
+}
+
 function DreamForm({
   dream,
   onSubmit,
@@ -1615,26 +1662,24 @@ function DreamForm({
 }) {
   return (
     <form key={dream?.id ?? "new-dream"} onSubmit={onSubmit} className="space-y-4">
-      <Field label="夢の内容">
+      <Field label="カテゴリー">
+        <select name="category" defaultValue={dream?.category ?? "その他"} className="input">
+          {categories.map((category) => (
+            <option key={category}>{category}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="夢">
         <input name="title" required defaultValue={dream?.title} placeholder="例：1年後に起業する" className="input" />
       </Field>
-      <Field label="理由">
-        <textarea name="reason" rows={3} defaultValue={dream?.reason} placeholder="なぜ実現したいか" className="input" />
+      <Field label="内容" hint="なぜ実現したいか、どんな状態になりたいかを短く書きます。">
+        <textarea name="reason" rows={3} defaultValue={dream?.reason} placeholder="例：自分の強みを活かして、家族との時間も大切にできる働き方にしたい" className="input" />
       </Field>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="期限">
-          <input name="deadline" type="date" defaultValue={dream?.deadline ?? ""} className="input" />
-        </Field>
-        <Field label="カテゴリー">
-          <select name="category" defaultValue={dream?.category ?? "その他"} className="input">
-            {categories.map((category) => (
-              <option key={category}>{category}</option>
-            ))}
-          </select>
-        </Field>
-      </div>
+      <Field label="期限">
+        <DeadlineInput name="deadline" defaultValue={dream?.deadline} />
+      </Field>
       <Field label="達成したい状態">
-        <textarea name="desired_state" rows={3} defaultValue={dream?.desired_state} placeholder="どんな状態なら達成と言えるか" className="input" />
+        <textarea name="desired_state" rows={3} defaultValue={dream?.desired_state} placeholder="例：最初の商品を販売し、継続して収益が出始めている" className="input" />
       </Field>
       <FormActions editing={Boolean(dream)} saveLabel={dream ? "夢を更新" : "夢を保存"} onCancel={onCancel} />
     </form>
@@ -1928,8 +1973,8 @@ function GoalForm({
       <Field label="説明">
         <textarea name="description" rows={3} defaultValue={goal?.description} className="input" />
       </Field>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="階層">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="目標の位置づけ" hint="夢から逆算して、いつ達成したい目標かを選びます。迷ったら今月目標でOKです。">
           <select name="level" defaultValue={goal?.level ?? "monthly"} className="input">
             {Object.entries(goalLabels).map(([value, label]) => (
               <option key={value} value={value}>
@@ -1938,8 +1983,8 @@ function GoalForm({
             ))}
           </select>
         </Field>
-        <Field label="期限">
-          <input name="deadline" type="date" defaultValue={goal?.deadline ?? ""} className="input" />
+        <Field label="目標の期限" hint="この目標をいつまでに終わらせるか。夢の期限より手前の日付にします。">
+          <DeadlineInput name="deadline" defaultValue={goal?.deadline} />
         </Field>
       </div>
       <FormActions editing={Boolean(goal)} saveLabel={goal ? "目標を更新" : "目標を保存"} onCancel={onCancel} />
@@ -2167,7 +2212,7 @@ function InboxForm({
   return (
     <form key={item?.id ?? "new-inbox"} onSubmit={onSubmit} className="space-y-4">
       <Field label="タイトル">
-        <input name="title" required defaultValue={item?.title} placeholder="いつかやりたいこと、アイデア、思いつき" className="input" />
+        <input name="title" required defaultValue={item?.title} placeholder="メモ、気づき、いつかやりたいこと" className="input" />
       </Field>
       <Field label="種類">
         <select name="kind" defaultValue={item?.kind ?? "idea"} className="input">
@@ -2181,7 +2226,7 @@ function InboxForm({
       <Field label="メモ">
         <textarea name="memo" rows={3} defaultValue={item?.memo} className="input" />
       </Field>
-      <FormActions editing={Boolean(item)} saveLabel={item ? "Inboxを更新" : "Inboxに保存"} onCancel={onCancel} />
+      <FormActions editing={Boolean(item)} saveLabel={item ? "メモを更新" : "メモを保存"} onCancel={onCancel} />
     </form>
   );
 }
@@ -2197,7 +2242,7 @@ function InboxList({
   onArchive: (item: InboxItem) => Promise<void>;
   onConvert: (item: InboxItem, target: "dream" | "goal" | "task") => Promise<void>;
 }) {
-  if (items.length === 0) return <Empty text="未整理のアイデアはありません。" />;
+  if (items.length === 0) return <Empty text="未整理のメモ・気づきはありません。" />;
   return (
     <div className="grid gap-3 lg:grid-cols-2">
       {items.map((item) => (
