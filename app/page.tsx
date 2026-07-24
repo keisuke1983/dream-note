@@ -218,6 +218,20 @@ function normalizeDate(value: FormDataEntryValue | null): DateValue {
   return text.length > 0 ? text : null;
 }
 
+function normalizeTaskDueDate(value: FormDataEntryValue | null): DateValue | "invalid" {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const normalized = text.replace(/[/.]/g, "-");
+  const match = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!match) return "invalid";
+  const [, year, month, day] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day));
+  if (date.getFullYear() !== Number(year) || date.getMonth() !== Number(month) - 1 || date.getDate() !== Number(day)) {
+    return "invalid";
+  }
+  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
 function normalizeId(value: FormDataEntryValue | null): string | null {
   const text = String(value ?? "").trim();
   return text.length > 0 ? text : null;
@@ -351,6 +365,12 @@ export default function App() {
     if (!supabase || !user) return;
     void loadRemoteData(user.id, user.email);
   }, [user]);
+
+  useEffect(() => {
+    if (notice?.type !== "success") return;
+    const timer = window.setTimeout(() => setNotice(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   async function loadRemoteData(activeUserId: string, email?: string) {
     if (!supabase) return;
@@ -705,6 +725,11 @@ export default function App() {
     const selectedDreamId = normalizeId(form.get("dream_id"));
     const coherentGoalId = selectedGoal && (!selectedDreamId || !selectedGoal.dream_id || selectedGoal.dream_id === selectedDreamId) ? selectedGoal.id : null;
     const coherentDreamId = selectedGoal?.dream_id ?? selectedDreamId;
+    const dueDate = normalizeTaskDueDate(form.get("due_date"));
+    if (dueDate === "invalid") {
+      setNotice({ type: "error", message: "期限は YYYY-MM-DD 形式で入力してください。" });
+      return;
+    }
     const task: Task = {
       id: existing?.id ?? crypto.randomUUID(),
       user_id: userId,
@@ -712,7 +737,7 @@ export default function App() {
       goal_id: coherentGoalId,
       title: String(form.get("title") ?? ""),
       memo: String(form.get("memo") ?? ""),
-      due_date: normalizeDate(form.get("due_date")),
+      due_date: dueDate,
       urgent: form.get("urgent") === "on",
       important: form.get("important") === "on",
       status: existing?.status ?? "todo",
@@ -720,10 +745,11 @@ export default function App() {
       created_at: existing?.created_at ?? now(),
       updated_at: now()
     };
+    const saved = await persist("tasks", task);
+    if (!saved) return;
     upsertLocal("tasks", task);
-    await persist("tasks", task);
     setEditingTaskId(null);
-    event.currentTarget.reset();
+    if (!existing) event.currentTarget.reset();
     setNotice({ type: "success", message: existing ? "タスクを更新しました。" : "タスクを保存しました。" });
     setTab("matrix");
   }
@@ -1808,6 +1834,37 @@ function DeadlineInput({ name, defaultValue }: { name: string; defaultValue?: Da
   );
 }
 
+function TaskDueDateInput({ defaultValue }: { defaultValue?: DateValue }) {
+  const textRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <div className="space-y-2">
+      <input
+        ref={textRef}
+        name="due_date"
+        type="text"
+        inputMode="numeric"
+        defaultValue={defaultValue ?? ""}
+        placeholder="YYYY-MM-DD"
+        pattern="\d{4}[-/.]\d{1,2}[-/.]\d{1,2}"
+        className="input"
+      />
+      <div className="flex items-center gap-2">
+        <input
+          type="date"
+          defaultValue={defaultValue ?? ""}
+          aria-label="カレンダーで期限を選択"
+          className="input min-w-0 flex-1"
+          onChange={(event) => {
+            if (textRef.current) textRef.current.value = event.target.value;
+          }}
+        />
+      </div>
+      <p className="text-xs leading-5 text-ink/55">手入力は YYYY-MM-DD。カレンダーで選ぶこともできます。</p>
+    </div>
+  );
+}
+
 function DreamForm({
   dream,
   onSubmit,
@@ -2210,7 +2267,7 @@ function TaskForm({
         <textarea name="memo" rows={3} defaultValue={task?.memo} className="input" />
       </Field>
       <Field label="期限">
-        <input name="due_date" type="date" defaultValue={task?.due_date ?? ""} className="input" />
+        <TaskDueDateInput defaultValue={task?.due_date} />
       </Field>
       <div className="grid grid-cols-2 gap-3">
         <label className="toggle">
