@@ -403,6 +403,10 @@ export default function App() {
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingInboxId, setEditingInboxId] = useState<string | null>(null);
   const [reschedulingTaskId, setReschedulingTaskId] = useState<string | null>(null);
+  const [dreamFormVersion, setDreamFormVersion] = useState(0);
+  const [goalFormVersion, setGoalFormVersion] = useState(0);
+  const [taskFormVersion, setTaskFormVersion] = useState(0);
+  const [inboxFormVersion, setInboxFormVersion] = useState(0);
   const [aiLoadingDreamId, setAiLoadingDreamId] = useState<string | null>(null);
   const [aiTodayLoading, setAiTodayLoading] = useState(false);
   const [aiWeeklyLoading, setAiWeeklyLoading] = useState(false);
@@ -787,7 +791,7 @@ export default function App() {
     if (!saved) return;
     upsertLocal("dreams", dream);
     setEditingDreamId(null);
-    if (!existing) event.currentTarget.reset();
+    if (!existing) setDreamFormVersion((version) => version + 1);
     setNotice({ type: "success", message: existing ? "夢を更新しました。" : "夢を保存しました。" });
     setTab("dreams");
   }
@@ -818,7 +822,7 @@ export default function App() {
     if (!saved) return;
     upsertLocal("goals", goal);
     setEditingGoalId(null);
-    if (!existing) event.currentTarget.reset();
+    if (!existing) setGoalFormVersion((version) => version + 1);
     setNotice({ type: "success", message: existing ? "目標を更新しました。" : "目標を保存しました。" });
   }
 
@@ -857,7 +861,7 @@ export default function App() {
     if (!saved) return;
     upsertLocal("tasks", task);
     setEditingTaskId(null);
-    if (!existing) event.currentTarget.reset();
+    if (!existing) setTaskFormVersion((version) => version + 1);
     setNotice({ type: "success", message: existing ? "タスクを更新しました。" : "タスクを保存しました。" });
     setTab("matrix");
   }
@@ -880,7 +884,7 @@ export default function App() {
     if (!saved) return;
     upsertLocal("inbox", item);
     setEditingInboxId(null);
-    if (!existing) event.currentTarget.reset();
+    if (!existing) setInboxFormVersion((version) => version + 1);
     setNotice({ type: "success", message: existing ? "メモを更新しました。" : "メモを保存しました。" });
   }
 
@@ -1444,7 +1448,7 @@ export default function App() {
       {tab === "dreams" && (
         <section className="space-y-4">
           <Panel title={editingDream ? "夢を編集" : "夢を入力"} icon={Sparkles}>
-            <DreamForm dream={editingDream} onSubmit={saveDream} onCancel={() => setEditingDreamId(null)} />
+            <DreamForm key={editingDream?.id ?? `new-dream-${dreamFormVersion}`} dream={editingDream} onSubmit={saveDream} onCancel={() => setEditingDreamId(null)} />
           </Panel>
           {data.dreams.length > 0 && (
             <Panel title="6本の柱" icon={Flag}>
@@ -1495,7 +1499,14 @@ export default function App() {
       {tab === "goals" && (
         <section className="space-y-4">
           <Panel title={editingGoal ? "目標を編集" : "目標設定"} icon={Target}>
-            <GoalForm dreams={linkableDreams} goals={activeGoals} goal={editingGoal} onSubmit={saveGoal} onCancel={() => setEditingGoalId(null)} />
+            <GoalForm
+              key={editingGoal?.id ?? `new-goal-${goalFormVersion}`}
+              dreams={linkableDreams}
+              goals={activeGoals}
+              goal={editingGoal}
+              onSubmit={saveGoal}
+              onCancel={() => setEditingGoalId(null)}
+            />
           </Panel>
           <Panel title="計画の流れ" icon={CalendarDays}>
             {activeGoals.length === 0 ? (
@@ -1517,6 +1528,7 @@ export default function App() {
         <section className="space-y-4">
           <Panel title={editingTask ? "タスクを編集" : "タスク入力"} icon={Plus}>
             <TaskForm
+              key={editingTask?.id ?? `new-task-${taskFormVersion}`}
               dreams={linkableDreams}
               goals={activeGoals}
               task={editingTask}
@@ -1549,7 +1561,12 @@ export default function App() {
       {tab === "inbox" && (
         <section className="space-y-4">
           <Panel title={editingInboxItem ? "メモ・気づきを編集" : "メモ・気づき"} icon={Inbox}>
-            <InboxForm item={editingInboxItem} onSubmit={saveInboxItem} onCancel={() => setEditingInboxId(null)} />
+            <InboxForm
+              key={editingInboxItem?.id ?? `new-inbox-${inboxFormVersion}`}
+              item={editingInboxItem}
+              onSubmit={saveInboxItem}
+              onCancel={() => setEditingInboxId(null)}
+            />
           </Panel>
           <Panel title="未整理のメモ・気づき" icon={Archive}>
             <InboxList
