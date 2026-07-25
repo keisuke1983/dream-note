@@ -505,6 +505,21 @@ export default function App() {
     }
   }
 
+  async function deleteRemote(table: string, id: string) {
+    if (!cloudMode || !supabase) return true;
+    try {
+      const { error } = await supabase.from(table).delete().eq("id", id).eq("user_id", userId);
+      if (error) {
+        setNotice({ type: "error", message: `クラウド削除に失敗しました: ${error.message}` });
+        return false;
+      }
+      return true;
+    } catch (error) {
+      setNotice({ type: "error", message: `クラウド削除に失敗しました: ${error instanceof Error ? error.message : "原因不明"}` });
+      return false;
+    }
+  }
+
   function upsertLocal<K extends CollectionKey>(key: K, record: AppData[K][number]) {
     setData((current) => {
       const list = current[key] as Array<{ id: string }>;
@@ -1149,10 +1164,54 @@ export default function App() {
     await persist("dreams", updated);
   }
 
+  async function deleteDream(dream: Dream) {
+    const relatedGoalCount = data.goals.filter((goal) => goal.dream_id === dream.id).length;
+    const relatedTaskCount = data.tasks.filter((task) => task.dream_id === dream.id).length;
+    const ok = window.confirm(
+      `「${dream.title}」を削除しますか？\n関連する目標${relatedGoalCount}件・タスク${relatedTaskCount}件は削除せず、夢との紐付けだけ外します。`
+    );
+    if (!ok) return;
+
+    const deleted = await deleteRemote("dreams", dream.id);
+    if (!deleted) return;
+    setData((current) => ({
+      ...current,
+      dreams: current.dreams.filter((item) => item.id !== dream.id),
+      goals: current.goals.map((goal) => (goal.dream_id === dream.id ? { ...goal, dream_id: null, updated_at: now() } : goal)),
+      tasks: current.tasks.map((task) => (task.dream_id === dream.id ? { ...task, dream_id: null, updated_at: now() } : task)),
+      aiSuggestions: current.aiSuggestions.map((suggestion) =>
+        suggestion.dream_id === dream.id ? { ...suggestion, dream_id: null, updated_at: now() } : suggestion
+      )
+    }));
+    if (editingDreamId === dream.id) setEditingDreamId(null);
+    setNotice({ type: "success", message: "夢を削除しました。関連する目標・タスクは残しています。" });
+  }
+
   async function archiveGoal(goal: Goal) {
     const updated: Goal = { ...goal, status: "archived", updated_at: now() };
     upsertLocal("goals", updated);
     await persist("goals", updated);
+  }
+
+  async function deleteGoal(goal: Goal) {
+    const relatedTaskCount = data.tasks.filter((task) => task.goal_id === goal.id).length;
+    const childGoalCount = data.goals.filter((item) => item.parent_goal_id === goal.id).length;
+    const ok = window.confirm(
+      `「${goal.title}」を削除しますか？\n関連するタスク${relatedTaskCount}件・下位目標${childGoalCount}件は削除せず、目標との紐付けだけ外します。`
+    );
+    if (!ok) return;
+
+    const deleted = await deleteRemote("goals", goal.id);
+    if (!deleted) return;
+    setData((current) => ({
+      ...current,
+      goals: current.goals
+        .filter((item) => item.id !== goal.id)
+        .map((item) => (item.parent_goal_id === goal.id ? { ...item, parent_goal_id: null, updated_at: now() } : item)),
+      tasks: current.tasks.map((task) => (task.goal_id === goal.id ? { ...task, goal_id: null, updated_at: now() } : task))
+    }));
+    if (editingGoalId === goal.id) setEditingGoalId(null);
+    setNotice({ type: "success", message: "目標を削除しました。関連するタスクは残しています。" });
   }
 
   async function archiveTask(task: Task) {
@@ -1406,6 +1465,7 @@ export default function App() {
                     onStatus={(status) => void updateDreamStatus(dream, status)}
                     onEdit={() => setEditingDreamId(dream.id)}
                     onArchive={() => void updateDreamStatus(dream, "paused")}
+                    onDelete={() => void deleteDream(dream)}
                     onClarify={() => void clarifyDreamWithAi(dream)}
                     aiLoading={aiLoadingDreamId === dream.id}
                   />
@@ -1446,6 +1506,7 @@ export default function App() {
                 dreams={data.dreams}
                 onEdit={(goal) => setEditingGoalId(goal.id)}
                 onArchive={(goal) => void archiveGoal(goal)}
+                onDelete={(goal) => void deleteGoal(goal)}
               />
             )}
           </Panel>
@@ -2187,6 +2248,7 @@ function DreamCard({
   onStatus,
   onEdit,
   onArchive,
+  onDelete,
   onClarify,
   aiLoading
 }: {
@@ -2196,6 +2258,7 @@ function DreamCard({
   onStatus: (status: Dream["status"]) => void;
   onEdit: () => void;
   onArchive: () => void;
+  onDelete: () => void;
   onClarify: () => void;
   aiLoading: boolean;
 }) {
@@ -2231,6 +2294,9 @@ function DreamCard({
         </button>
         <button className="mini-button" onClick={() => onStatus("active")}>
           進行中
+        </button>
+        <button className="mini-button text-clay" onClick={onDelete}>
+          <X className="h-3.5 w-3.5" /> 削除
         </button>
       </div>
     </article>
@@ -2523,12 +2589,14 @@ function GoalPlanFlow({
   goals,
   dreams,
   onEdit,
-  onArchive
+  onArchive,
+  onDelete
 }: {
   goals: Goal[];
   dreams: Dream[];
   onEdit: (goal: Goal) => void;
   onArchive: (goal: Goal) => void;
+  onDelete: (goal: Goal) => void;
 }) {
   const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
   const goalById = new Map(goals.map((goal) => [goal.id, goal]));
@@ -2555,6 +2623,7 @@ function GoalPlanFlow({
                     parentGoal={goalById.get(parentGoalId(goal) ?? "")}
                     onEdit={() => onEdit(goal)}
                     onArchive={() => onArchive(goal)}
+                    onDelete={() => onDelete(goal)}
                   />
                 ))}
               </div>
@@ -2580,6 +2649,7 @@ function GoalPlanFlow({
                 parentGoal={goalById.get(parentGoalId(goal) ?? "")}
                 onEdit={() => onEdit(goal)}
                 onArchive={() => onArchive(goal)}
+                onDelete={() => onDelete(goal)}
               />
             ))}
           </div>
@@ -2594,13 +2664,15 @@ function GoalCard({
   dream,
   parentGoal,
   onEdit,
-  onArchive
+  onArchive,
+  onDelete
 }: {
   goal: Goal;
   dream?: Dream;
   parentGoal?: Goal;
   onEdit: () => void;
   onArchive: () => void;
+  onDelete: () => void;
 }) {
   return (
     <article className="rounded-lg border border-mist bg-white p-4">
@@ -2620,6 +2692,9 @@ function GoalCard({
         </button>
         <button className="mini-button" onClick={onArchive}>
           <Archive className="h-3.5 w-3.5" /> アーカイブ
+        </button>
+        <button className="mini-button text-clay" onClick={onDelete}>
+          <X className="h-3.5 w-3.5" /> 削除
         </button>
       </div>
     </article>
