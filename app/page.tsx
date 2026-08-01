@@ -1675,7 +1675,6 @@ export default function App() {
       <header className="mb-5 flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-moss">AI Dream Note</p>
-          <h1 className="mt-1 text-3xl font-bold text-ink">夢に日付を。</h1>
         </div>
         <div className="rounded-full bg-white/80 px-3 py-2 text-right text-xs font-semibold text-moss shadow-soft">{today()}</div>
       </header>
@@ -1690,6 +1689,13 @@ export default function App() {
 
       {tab === "home" && (
         <section className="space-y-4">
+          <HomeGoalCarousel
+            monthlyGoals={homeMonthlyGoals}
+            yearGoals={homeYearGoals}
+            futureGoals={homeFutureGoals}
+            dreams={data.dreams}
+            onOpenGoals={() => setTab("goals")}
+          />
           <Panel title="今日やること" icon={ListChecks}>
             <HomeTodayPanel
               suggestion={todayAiSuggestion?.output_json}
@@ -1711,15 +1717,6 @@ export default function App() {
           </Panel>
           <TodayCompletedPanel records={todayCompletionRecords} tasks={data.tasks} dreams={data.dreams} goals={data.goals} />
           <MotivationCardStrip cards={visibleMotivationCards} startIndex={motivationCardIndex} onEdit={() => setTab("settings")} />
-          <Panel title="1か月後の目標" icon={Target}>
-            <HomeGoalList goals={homeMonthlyGoals} dreams={data.dreams} emptyText="今月の目標を登録すると、今日やる理由が見えやすくなります。" />
-          </Panel>
-          <Panel title="1年後の目標" icon={CalendarDays}>
-            <HomeGoalList goals={homeYearGoals} dreams={data.dreams} emptyText="1年目標を登録すると、中期的な方向を確認できます。" />
-          </Panel>
-          <Panel title="将来の目標" icon={Flag}>
-            <HomeGoalList goals={homeFutureGoals} dreams={data.dreams} emptyText="5年計画を登録すると、長期の方向性を確認できます。" compact />
-          </Panel>
         </section>
       )}
 
@@ -2314,6 +2311,82 @@ function HomeTodayPanel({
         </button>
       </div>
     </div>
+  );
+}
+
+function HomeGoalCarousel({
+  monthlyGoals,
+  yearGoals,
+  futureGoals,
+  dreams,
+  onOpenGoals
+}: {
+  monthlyGoals: Goal[];
+  yearGoals: Goal[];
+  futureGoals: Goal[];
+  dreams: Dream[];
+  onOpenGoals: () => void;
+}) {
+  const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
+  const cards = [
+    {
+      key: "monthly",
+      period: "1か月後",
+      icon: Target,
+      goals: monthlyGoals,
+      emptyText: "今月の目標を登録"
+    },
+    {
+      key: "year",
+      period: "1年後",
+      icon: CalendarDays,
+      goals: yearGoals,
+      emptyText: "1年目標を登録"
+    },
+    {
+      key: "future",
+      period: "将来",
+      icon: Flag,
+      goals: futureGoals,
+      emptyText: "5年計画を登録"
+    }
+  ];
+
+  return (
+    <section aria-label="目標カード" className="-mx-4 overflow-hidden pl-4">
+      <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 pr-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {cards.map((card) => {
+          const goal = card.goals[0];
+          const dream = goal ? dreamById.get(goal.dream_id ?? "") : undefined;
+          const Icon = card.icon;
+          return (
+            <button
+              key={card.key}
+              type="button"
+              onClick={onOpenGoals}
+              className="tap-highlight min-w-[82%] snap-start rounded-lg border border-white/80 bg-white/90 p-3 text-left shadow-soft sm:min-w-[15rem] lg:min-w-[17rem]"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex min-w-0 items-center gap-2 text-xs font-bold text-clay">
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-mist text-moss">
+                    <Icon size={17} />
+                  </span>
+                  {card.period}
+                </span>
+                <span className="shrink-0 rounded-full bg-mist px-2 py-1 text-[11px] font-semibold text-moss">
+                  {goal ? dueLabel(goal.deadline) : "未設定"}
+                </span>
+              </div>
+              <h2 className="mt-2 line-clamp-2 min-h-[2.5rem] text-base font-bold leading-5 text-ink">
+                {goal?.title ?? card.emptyText}
+              </h2>
+              <p className="mt-2 line-clamp-1 text-xs text-ink/60">夢：{dream?.title ?? "未紐づけ"}</p>
+              {card.goals.length > 1 && <p className="mt-1 text-[11px] font-semibold text-moss">他 {card.goals.length - 1} 件</p>}
+            </button>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
