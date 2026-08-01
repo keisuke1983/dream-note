@@ -21,6 +21,7 @@ import {
   Sparkles,
   Target,
   Trophy,
+  Undo2,
   X,
   type LucideIcon
 } from "lucide-react";
@@ -219,7 +220,7 @@ type CollectionKey =
   | "taskCompletionRecords"
   | "motivationCards";
 type Tab = "home" | "dreams" | "goals" | "tasks" | "matrix" | "inbox" | "reflect" | "settings";
-type Notice = { type: "success" | "error"; message: string };
+type Notice = { type: "success" | "error"; message: string; actionLabel?: string; onAction?: () => void };
 type GoalLevel = "five_year" | "one_year" | "monthly" | "weekly" | "daily" | "ten_year" | "three_year";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -465,6 +466,65 @@ function isRecurringTask(task: Task) {
 
 function isTaskCompletedOn(taskId: string, date: string, records: TaskCompletionRecord[]) {
   return records.some((record) => record.task_id === taskId && record.completion_date === date);
+}
+
+function isTaskEffectivelyDone(task: Task, records: TaskCompletionRecord[]) {
+  return task.status === "done" || records.some((record) => record.task_id === task.id);
+}
+
+function goalProgress(goal: Goal, goals: Goal[], tasks: Task[], records: TaskCompletionRecord[]) {
+  const childGoals = goals.filter((child) => child.status !== "archived" && parentGoalId(child) === goal.id);
+  const childTasks = tasks.filter((task) => task.status !== "archived" && task.goal_id === goal.id);
+  const doneGoals = childGoals.filter((child) => child.status === "done").length;
+  const doneTasks = childTasks.filter((task) => isTaskEffectivelyDone(task, records)).length;
+  const total = childGoals.length + childTasks.length;
+  const done = doneGoals + doneTasks;
+  return { childGoals, childTasks, done, total };
+}
+
+function goalAncestors(goalId: string | null | undefined, goals: Goal[]) {
+  const goalById = new Map(goals.map((goal) => [goal.id, goal]));
+  const ancestors: Goal[] = [];
+  const seen = new Set<string>();
+  let current = goalId ? goalById.get(goalId) : undefined;
+  while (current && !seen.has(current.id)) {
+    ancestors.push(current);
+    seen.add(current.id);
+    current = parentGoalId(current) ? goalById.get(parentGoalId(current) ?? "") : undefined;
+  }
+  return ancestors;
+}
+
+function reconcileGoalStatuses(goals: Goal[], tasks: Task[], records: TaskCompletionRecord[], startGoalId: string | null | undefined) {
+  if (!startGoalId) return goals;
+  const targetIds = goalAncestors(startGoalId, goals).map((goal) => goal.id);
+  if (targetIds.length === 0) return goals;
+  let nextGoals = goals;
+  for (const goalId of targetIds) {
+    const goal = nextGoals.find((item) => item.id === goalId);
+    if (!goal || goal.status === "archived") continue;
+    const progress = goalProgress(goal, nextGoals, tasks, records);
+    if (progress.total === 0) continue;
+    const nextStatus: Goal["status"] = progress.done >= progress.total ? "done" : goal.status === "done" ? "todo" : goal.status;
+    if (nextStatus !== goal.status) {
+      nextGoals = nextGoals.map((item) => (item.id === goal.id ? { ...item, status: nextStatus, updated_at: now() } : item));
+    }
+  }
+  return nextGoals;
+}
+
+function changedGoals(before: Goal[], after: Goal[]) {
+  const beforeById = new Map(before.map((goal) => [goal.id, goal]));
+  return after.filter((goal) => {
+    const previous = beforeById.get(goal.id);
+    return previous && (previous.status !== goal.status || previous.updated_at !== goal.updated_at);
+  });
+}
+
+function timeInputValue(isoValue: string) {
+  const date = new Date(isoValue);
+  if (Number.isNaN(date.getTime())) return "09:00";
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function isRecurringTaskDueOn(task: Task, date: string) {
@@ -1394,9 +1454,78 @@ export default function App() {
     if (!recordSaved) return;
     const taskSaved = await persist("tasks", updated);
     if (!taskSaved) return;
-    upsertLocal("taskCompletionRecords", record);
-    upsertLocal("tasks", updated);
-    setNotice({ type: "success", message: "完了しました。" });
+    const nextRecords = [record, ...data.taskCompletionRecords.filter((item) => item.id !== record.id)];
+    const nextTasks = data.tasks.map((item) => (item.id === updated.id ? updated : item));
+    const nextGoals = reconcileGoalStatuses(data.goals, nextTasks, nextRecords, task.goal_id);
+    const goalsToPersist = changedGoals(data.goals, nextGoals);
+    for (const goal of goalsToPersist) {
+      await persist("goals", goal);
+    }
+    setData((current) => ({
+      ...current,
+      taskCompletionRecords: [record, ...current.taskCompletionRecords.filter((item) => item.id !== record.id)],
+      tasks: current.tasks.map((item) => (item.id === updated.id ? updated : item)),
+      goals: nextGoals
+    }));
+    setNotice({
+      type: "success",
+      message: "完了しました。",
+      actionLabel: "元に戻す",
+      onAction: () => void undoTaskCompletion(record)
+    });
+  }
+
+  async function undoTaskCompletion(record: TaskCompletionRecord) {
+    const task = data.tasks.find((item) => item.id === record.task_id);
+    const nextRecords = data.taskCompletionRecords.filter((item) => item.id !== record.id);
+    const latestRemainingRecord = nextRecords
+      .filter((item) => item.task_id === record.task_id)
+      .sort((a, b) => b.completed_at.localeCompare(a.completed_at))[0];
+    const updatedTask = task
+      ? {
+          ...task,
+          status: isRecurringTask(task) ? task.status : "todo",
+          completed_at: latestRemainingRecord?.completed_at ?? null,
+          updated_at: now()
+        }
+      : null;
+    const nextTasks = updatedTask ? data.tasks.map((item) => (item.id === updatedTask.id ? updatedTask : item)) : data.tasks;
+    const nextGoals = reconcileGoalStatuses(data.goals, nextTasks, nextRecords, record.goal_id ?? task?.goal_id);
+    const goalsToPersist = changedGoals(data.goals, nextGoals);
+
+    const recordDeleted = await deleteRemote("task_completion_records", record.id);
+    if (!recordDeleted) return;
+    if (updatedTask) {
+      const taskSaved = await persist("tasks", updatedTask);
+      if (!taskSaved) return;
+    }
+    for (const goal of goalsToPersist) {
+      await persist("goals", goal);
+    }
+
+    setData((current) => ({
+      ...current,
+      taskCompletionRecords: current.taskCompletionRecords.filter((item) => item.id !== record.id),
+      tasks: updatedTask ? current.tasks.map((item) => (item.id === updatedTask.id ? updatedTask : item)) : current.tasks,
+      goals: nextGoals
+    }));
+    setNotice({ type: "success", message: "完了を取り消しました。今日やることへ戻しました。" });
+  }
+
+  async function updateCompletionTime(record: TaskCompletionRecord, timeValue: string) {
+    if (!/^\d{2}:\d{2}$/.test(timeValue)) {
+      setNotice({ type: "error", message: "時刻は HH:MM 形式で入力してください。" });
+      return;
+    }
+    const updated: TaskCompletionRecord = {
+      ...record,
+      completed_at: new Date(`${record.completion_date}T${timeValue}:00`).toISOString(),
+      updated_at: now()
+    };
+    const saved = await persist("task_completion_records", updated);
+    if (!saved) return;
+    upsertLocal("taskCompletionRecords", updated);
+    setNotice({ type: "success", message: "完了時刻を訂正しました。" });
   }
 
   async function updateDreamStatus(dream: Dream, status: Dream["status"]) {
@@ -1715,7 +1844,18 @@ export default function App() {
               onReschedule={(task) => setReschedulingTaskId(task.id)}
             />
           </Panel>
-          <TodayCompletedPanel records={todayCompletionRecords} tasks={data.tasks} dreams={data.dreams} goals={data.goals} />
+          <TodayCompletedPanel
+            records={todayCompletionRecords}
+            tasks={data.tasks}
+            dreams={data.dreams}
+            goals={data.goals}
+            onUndo={(record) => void undoTaskCompletion(record)}
+            onEditTask={(task) => {
+              setEditingTaskId(task.id);
+              setTab("tasks");
+            }}
+            onUpdateTime={(record, timeValue) => void updateCompletionTime(record, timeValue)}
+          />
           <MotivationCardStrip cards={visibleMotivationCards} startIndex={motivationCardIndex} onEdit={() => setTab("settings")} />
         </section>
       )}
@@ -1790,6 +1930,8 @@ export default function App() {
               <GoalPlanFlow
                 goals={activeGoals}
                 dreams={data.dreams}
+                tasks={data.tasks}
+                completionRecords={data.taskCompletionRecords}
                 onEdit={(goal) => setEditingGoalId(goal.id)}
                 onArchive={(goal) => void archiveGoal(goal)}
                 onDelete={(goal) => void deleteGoal(goal)}
@@ -1966,9 +2108,22 @@ function NoticeBar({ notice, onClose }: { notice: Notice; onClose: () => void })
       }`}
     >
       <p>{notice.message}</p>
-      <button className="rounded-md p-1" onClick={onClose} aria-label="通知を閉じる">
-        <X className="h-4 w-4" />
-      </button>
+      <div className="flex shrink-0 items-center gap-2">
+        {notice.actionLabel && notice.onAction && (
+          <button
+            className="rounded-md bg-white px-2 py-1 text-xs font-bold text-clay"
+            onClick={() => {
+              notice.onAction?.();
+              onClose();
+            }}
+          >
+            {notice.actionLabel}
+          </button>
+        )}
+        <button className="rounded-md p-1" onClick={onClose} aria-label="通知を閉じる">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
     </div>
   );
 }
@@ -2027,12 +2182,18 @@ function TodayCompletedPanel({
   records,
   tasks,
   dreams,
-  goals
+  goals,
+  onUndo,
+  onEditTask,
+  onUpdateTime
 }: {
   records: TaskCompletionRecord[];
   tasks: Task[];
   dreams: Dream[];
   goals: Goal[];
+  onUndo: (record: TaskCompletionRecord) => void;
+  onEditTask: (task: Task) => void;
+  onUpdateTime: (record: TaskCompletionRecord, timeValue: string) => void;
 }) {
   if (records.length === 0) return null;
   const taskById = new Map(tasks.map((task) => [task.id, task]));
@@ -2059,6 +2220,29 @@ function TodayCompletedPanel({
                     {dream ? ` / ${dream.title}` : ""}
                   </p>
                 )}
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <form
+                    className="flex min-w-[9rem] flex-1 items-center gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const form = new FormData(event.currentTarget);
+                      onUpdateTime(record, String(form.get("completed_time") ?? ""));
+                    }}
+                  >
+                    <input name="completed_time" type="time" defaultValue={timeInputValue(record.completed_at)} className="input min-h-10 py-2 text-sm" />
+                    <button className="mini-button shrink-0" type="submit">
+                      時刻訂正
+                    </button>
+                  </form>
+                  {task && (
+                    <button className="mini-button" onClick={() => onEditTask(task)}>
+                      <Edit3 className="h-3.5 w-3.5" /> 内容修正
+                    </button>
+                  )}
+                  <button className="mini-button" onClick={() => onUndo(record)}>
+                    <Undo2 className="h-3.5 w-3.5" /> 完了を取り消す
+                  </button>
+                </div>
               </article>
             );
           })}
@@ -2271,12 +2455,7 @@ function HomeTodayPanel({
             </div>
             <h3 className={`${prominent ? "text-lg" : "text-base"} mt-2 font-bold text-ink`}>{task.title}</h3>
             {recommendation?.reason && <p className="mt-1 text-sm leading-6 text-ink/70">{recommendation.reason}</p>}
-            {(dream || goal) && (
-              <p className="mt-2 text-xs leading-5 text-moss">
-                {goal?.title ?? "目標未紐づけ"}
-                {dream ? ` / ${dream.title}` : ""}
-              </p>
-            )}
+            <TaskPlanTrail task={task} dream={dream} goal={goal} goals={goals} />
             <div className="mt-3 flex flex-wrap gap-2">
               <button className="mini-button" onClick={() => onEdit(task)}>
                 <Edit3 className="h-3.5 w-3.5" /> 編集
@@ -2387,6 +2566,30 @@ function HomeGoalCarousel({
         })}
       </div>
     </section>
+  );
+}
+
+function TaskPlanTrail({ task, dream, goal, goals }: { task: Task; dream?: Dream; goal?: Goal; goals: Goal[] }) {
+  const trail = goal ? goalAncestors(goal.id, goals) : [];
+  if (!dream && trail.length === 0) {
+    return <p className="mt-2 text-xs leading-5 text-ink/45">上位計画：未紐づけ</p>;
+  }
+  const directLabel = trail[0] ? `${goalLabels[trail[0].level]}「${trail[0].title}」` : dream ? `夢「${dream.title}」` : "未紐づけ";
+  return (
+    <details className="mt-2 rounded-lg bg-mist/50 px-3 py-2 text-xs text-moss">
+      <summary className="cursor-pointer list-none font-bold">
+        上位計画：{directLabel}
+      </summary>
+      <div className="mt-2 space-y-1 leading-5">
+        <p>今日「{task.title}」</p>
+        {trail.map((item) => (
+          <p key={item.id}>
+            → {goalLabels[item.level]}「{item.title}」
+          </p>
+        ))}
+        {dream && <p>→ 夢「{dream.title}」</p>}
+      </div>
+    </details>
   );
 }
 
@@ -3143,12 +3346,16 @@ function GoalForm({
 function GoalPlanFlow({
   goals,
   dreams,
+  tasks,
+  completionRecords,
   onEdit,
   onArchive,
   onDelete
 }: {
   goals: Goal[];
   dreams: Dream[];
+  tasks: Task[];
+  completionRecords: TaskCompletionRecord[];
   onEdit: (goal: Goal) => void;
   onArchive: (goal: Goal) => void;
   onDelete: (goal: Goal) => void;
@@ -3176,6 +3383,9 @@ function GoalPlanFlow({
                     goal={goal}
                     dream={dreamById.get(goal.dream_id ?? "")}
                     parentGoal={goalById.get(parentGoalId(goal) ?? "")}
+                    goals={goals}
+                    tasks={tasks}
+                    completionRecords={completionRecords}
                     onEdit={() => onEdit(goal)}
                     onArchive={() => onArchive(goal)}
                     onDelete={() => onDelete(goal)}
@@ -3202,6 +3412,9 @@ function GoalPlanFlow({
                 goal={goal}
                 dream={dreamById.get(goal.dream_id ?? "")}
                 parentGoal={goalById.get(parentGoalId(goal) ?? "")}
+                goals={goals}
+                tasks={tasks}
+                completionRecords={completionRecords}
                 onEdit={() => onEdit(goal)}
                 onArchive={() => onArchive(goal)}
                 onDelete={() => onDelete(goal)}
@@ -3218,6 +3431,9 @@ function GoalCard({
   goal,
   dream,
   parentGoal,
+  goals,
+  tasks,
+  completionRecords,
   onEdit,
   onArchive,
   onDelete
@@ -3225,22 +3441,50 @@ function GoalCard({
   goal: Goal;
   dream?: Dream;
   parentGoal?: Goal;
+  goals: Goal[];
+  tasks: Task[];
+  completionRecords: TaskCompletionRecord[];
   onEdit: () => void;
   onArchive: () => void;
   onDelete: () => void;
 }) {
+  const progress = goalProgress(goal, goals, tasks, completionRecords);
+  const done = goal.status === "done";
   return (
     <article className="rounded-lg border border-mist bg-white p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-bold text-clay">{goalLabels[goal.level]}</p>
-          <h3 className="mt-1 font-bold text-ink">{goal.title}</h3>
+          <h3 className="mt-1 font-bold text-ink">{done ? <RedPenText>{goal.title}</RedPenText> : goal.title}</h3>
         </div>
         <span className="shrink-0 rounded-full bg-mist px-2 py-1 text-xs font-semibold text-moss">{goal.deadline || "期限未設定"}</span>
       </div>
       {goal.description && <p className="mt-2 text-sm leading-6 text-ink/70">{goal.description}</p>}
       <p className="mt-3 text-xs text-moss">夢：{dream?.title ?? "未紐づけ"}</p>
       <p className="mt-1 text-xs text-ink/55">つながる目標：{parentGoal ? `${goalLabels[parentGoal.level]}・${parentGoal.title}` : "未設定"}</p>
+      <div className="mt-3 rounded-lg bg-mist/45 p-3">
+        <div className="flex items-center justify-between gap-2 text-xs font-bold text-moss">
+          <span>下位項目の進捗</span>
+          <span>
+            {progress.done} / {progress.total}
+          </span>
+        </div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
+          <div className="h-full rounded-full bg-leaf" style={{ width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%` }} />
+        </div>
+        <details className="mt-2 text-xs text-ink/65">
+          <summary className="cursor-pointer font-bold text-clay">下位の計画・今日の行動を見る</summary>
+          <ul className="mt-2 space-y-1 leading-5">
+            {progress.childGoals.map((child) => (
+              <li key={child.id}>・{child.status === "done" ? <RedPenText>{child.title}</RedPenText> : child.title}</li>
+            ))}
+            {progress.childTasks.map((task) => (
+              <li key={task.id}>・{isTaskEffectivelyDone(task, completionRecords) ? <RedPenText>{task.title}</RedPenText> : task.title}</li>
+            ))}
+            {progress.total === 0 && <li>・まだ下位項目はありません</li>}
+          </ul>
+        </details>
+      </div>
       <div className="mt-4 flex flex-wrap gap-2">
         <button className="mini-button" onClick={onEdit}>
           <Edit3 className="h-3.5 w-3.5" /> 編集
