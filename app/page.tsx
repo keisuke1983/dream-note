@@ -289,6 +289,14 @@ const parentGoalLevelsByLevel: Record<GoalLevel, GoalLevel[]> = {
   three_year: ["ten_year", "five_year"]
 };
 
+function nextPlanStep(level: GoalLevel): GoalLevel | "task" | null {
+  if (level === "five_year" || level === "ten_year" || level === "three_year") return "one_year";
+  if (level === "one_year") return "monthly";
+  if (level === "monthly") return "weekly";
+  if (level === "weekly" || level === "daily") return "task";
+  return null;
+}
+
 const inboxKindLabels: Record<InboxItem["kind"], string> = {
   someday: "いつか",
   idea: "アイデア",
@@ -570,6 +578,8 @@ export default function App() {
   const [editingInboxId, setEditingInboxId] = useState<string | null>(null);
   const [editingMotivationCardId, setEditingMotivationCardId] = useState<string | null>(null);
   const [reschedulingTaskId, setReschedulingTaskId] = useState<string | null>(null);
+  const [goalDraft, setGoalDraft] = useState<Partial<Goal> | null>(null);
+  const [taskDraft, setTaskDraft] = useState<Partial<Task> | null>(null);
   const [dreamFormVersion, setDreamFormVersion] = useState(0);
   const [goalFormVersion, setGoalFormVersion] = useState(0);
   const [taskFormVersion, setTaskFormVersion] = useState(0);
@@ -856,6 +866,15 @@ export default function App() {
     [activeGoals]
   );
 
+  const homeWeeklyGoals = useMemo(
+    () =>
+      activeGoals
+        .filter((goal) => goal.level === "weekly")
+        .sort((a, b) => dateDistance(a.deadline) - dateDistance(b.deadline))
+        .slice(0, 3),
+    [activeGoals]
+  );
+
   const homeYearGoals = useMemo(
     () =>
       activeGoals
@@ -865,7 +884,7 @@ export default function App() {
     [activeGoals]
   );
 
-  const homeFutureGoals = useMemo(
+  const homeFiveYearGoals = useMemo(
     () =>
       activeGoals
         .filter((goal) => goal.level === "five_year" || goal.level === "three_year" || goal.level === "ten_year")
@@ -1075,7 +1094,10 @@ export default function App() {
     if (!saved) return;
     upsertLocal("goals", goal);
     setEditingGoalId(null);
-    if (!existing) setGoalFormVersion((version) => version + 1);
+    if (!existing) {
+      setGoalDraft(null);
+      setGoalFormVersion((version) => version + 1);
+    }
     setNotice({ type: "success", message: existing ? "目標を更新しました。" : "目標を保存しました。" });
   }
 
@@ -1134,7 +1156,10 @@ export default function App() {
     if (!saved) return;
     upsertLocal("tasks", task);
     setEditingTaskId(null);
-    if (!existing) setTaskFormVersion((version) => version + 1);
+    if (!existing) {
+      setTaskDraft(null);
+      setTaskFormVersion((version) => version + 1);
+    }
     setNotice({ type: "success", message: existing ? "タスクを更新しました。" : "タスクを保存しました。" });
     setTab("matrix");
   }
@@ -1159,6 +1184,47 @@ export default function App() {
     setEditingInboxId(null);
     if (!existing) setInboxFormVersion((version) => version + 1);
     setNotice({ type: "success", message: existing ? "メモを更新しました。" : "メモを保存しました。" });
+  }
+
+  function startDecomposeGoal(goal: Goal) {
+    const nextStep = nextPlanStep(goal.level);
+    if (!nextStep) {
+      setNotice({ type: "error", message: "この目標から分解できる次の階層がありません。" });
+      return;
+    }
+
+    setEditingGoalId(null);
+    setEditingTaskId(null);
+
+    if (nextStep === "task") {
+      setTaskDraft({
+        dream_id: goal.dream_id,
+        goal_id: goal.id,
+        due_date: today(),
+        urgent: false,
+        important: true,
+        status: "todo",
+        title: "",
+        memo: ""
+      });
+      setTaskFormVersion((version) => version + 1);
+      setTab("tasks");
+      setNotice({ type: "success", message: "今週の目標から、今日の行動へ分解します。" });
+      return;
+    }
+
+    setGoalDraft({
+      dream_id: goal.dream_id,
+      parent_goal_id: goal.id,
+      level: nextStep,
+      deadline: goal.deadline,
+      status: "todo",
+      title: "",
+      description: ""
+    });
+    setGoalFormVersion((version) => version + 1);
+    setTab("goals");
+    setNotice({ type: "success", message: `${goalLabels[goal.level]}から${goalLabels[nextStep]}へ分解します。` });
   }
 
   async function clarifyDreamWithAi(dream: Dream) {
@@ -1819,11 +1885,17 @@ export default function App() {
       {tab === "home" && (
         <section className="space-y-4">
           <HomeGoalCarousel
-            monthlyGoals={homeMonthlyGoals}
+            fiveYearGoals={homeFiveYearGoals}
             yearGoals={homeYearGoals}
-            futureGoals={homeFutureGoals}
+            monthlyGoals={homeMonthlyGoals}
+            weeklyGoals={homeWeeklyGoals}
+            todayTasks={todayTasks}
+            goals={data.goals}
+            tasks={data.tasks}
+            completionRecords={data.taskCompletionRecords}
             dreams={data.dreams}
             onOpenGoals={() => setTab("goals")}
+            onOpenTasks={() => setTab("tasks")}
           />
           <Panel title="今日やること" icon={ListChecks}>
             <HomeTodayPanel
@@ -1837,6 +1909,7 @@ export default function App() {
               onGenerate={() => void generateTodayActionsWithAi()}
               onComplete={completeTask}
               onEdit={(task) => {
+                setTaskDraft(null);
                 setEditingTaskId(task.id);
                 setTab("tasks");
               }}
@@ -1851,6 +1924,7 @@ export default function App() {
             goals={data.goals}
             onUndo={(record) => void undoTaskCompletion(record)}
             onEditTask={(task) => {
+              setTaskDraft(null);
               setEditingTaskId(task.id);
               setTab("tasks");
             }}
@@ -1919,8 +1993,12 @@ export default function App() {
               dreams={linkableDreams}
               goals={activeGoals}
               goal={editingGoal}
+              draft={goalDraft}
               onSubmit={saveGoal}
-              onCancel={() => setEditingGoalId(null)}
+              onCancel={() => {
+                setEditingGoalId(null);
+                setGoalDraft(null);
+              }}
             />
           </Panel>
           <Panel title="計画の流れ" icon={CalendarDays}>
@@ -1932,9 +2010,13 @@ export default function App() {
                 dreams={data.dreams}
                 tasks={data.tasks}
                 completionRecords={data.taskCompletionRecords}
-                onEdit={(goal) => setEditingGoalId(goal.id)}
+                onEdit={(goal) => {
+                  setGoalDraft(null);
+                  setEditingGoalId(goal.id);
+                }}
                 onArchive={(goal) => void archiveGoal(goal)}
                 onDelete={(goal) => void deleteGoal(goal)}
+                onDecompose={startDecomposeGoal}
               />
             )}
           </Panel>
@@ -1949,8 +2031,12 @@ export default function App() {
               dreams={linkableDreams}
               goals={activeGoals}
               task={editingTask}
+              draft={taskDraft}
               onSubmit={saveTask}
-              onCancel={() => setEditingTaskId(null)}
+              onCancel={() => {
+                setEditingTaskId(null);
+                setTaskDraft(null);
+              }}
             />
           </Panel>
         </section>
@@ -2494,55 +2580,111 @@ function HomeTodayPanel({
 }
 
 function HomeGoalCarousel({
-  monthlyGoals,
+  fiveYearGoals,
   yearGoals,
-  futureGoals,
+  monthlyGoals,
+  weeklyGoals,
+  todayTasks,
+  goals,
+  tasks,
+  completionRecords,
   dreams,
-  onOpenGoals
+  onOpenGoals,
+  onOpenTasks
 }: {
+  fiveYearGoals: Goal[];
   monthlyGoals: Goal[];
   yearGoals: Goal[];
-  futureGoals: Goal[];
+  weeklyGoals: Goal[];
+  todayTasks: Task[];
+  goals: Goal[];
+  tasks: Task[];
+  completionRecords: TaskCompletionRecord[];
   dreams: Dream[];
   onOpenGoals: () => void;
+  onOpenTasks: () => void;
 }) {
   const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
+  const goalById = new Map(goals.map((goal) => [goal.id, goal]));
+  const todayDoneCount = completionRecords.filter((record) => record.completed_at.startsWith(today())).length;
+  const todayTotal = todayTasks.length + todayDoneCount;
   const cards = [
     {
+      key: "today",
+      period: "今日",
+      icon: ListChecks,
+      goals: [] as Goal[],
+      tasks: todayTasks,
+      emptyText: "今日の行動を登録",
+      onClick: onOpenTasks
+    },
+    {
+      key: "weekly",
+      period: "今週",
+      icon: ClipboardList,
+      goals: weeklyGoals,
+      tasks: [] as Task[],
+      emptyText: "今週目標を登録",
+      onClick: onOpenGoals
+    },
+    {
       key: "monthly",
-      period: "1か月後",
+      period: "今月",
       icon: Target,
       goals: monthlyGoals,
-      emptyText: "今月の目標を登録"
+      tasks: [] as Task[],
+      emptyText: "今月目標を登録",
+      onClick: onOpenGoals
     },
     {
       key: "year",
-      period: "1年後",
+      period: "1年",
       icon: CalendarDays,
       goals: yearGoals,
-      emptyText: "1年目標を登録"
+      tasks: [] as Task[],
+      emptyText: "1年目標を登録",
+      onClick: onOpenGoals
     },
     {
-      key: "future",
-      period: "将来",
+      key: "five-year",
+      period: "5年",
       icon: Flag,
-      goals: futureGoals,
-      emptyText: "5年計画を登録"
+      goals: fiveYearGoals,
+      tasks: [] as Task[],
+      emptyText: "5年計画を登録",
+      onClick: onOpenGoals
     }
   ];
 
   return (
-    <section aria-label="目標カード" className="-mx-4 overflow-hidden pl-4">
+    <section aria-label="今日から5年までの計画カード" className="-mx-4 overflow-hidden pl-4">
+      <div className="mb-2 flex items-center justify-between gap-2 pr-4">
+        <p className="text-xs font-bold text-moss">今日から逆算を確認</p>
+        <p className="text-[11px] font-semibold text-ink/45">横にスワイプ</p>
+      </div>
       <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 pr-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {cards.map((card) => {
           const goal = card.goals[0];
+          const task = card.tasks[0];
           const dream = goal ? dreamById.get(goal.dream_id ?? "") : undefined;
+          const taskGoal = task ? goalById.get(task.goal_id ?? "") : undefined;
+          const taskDream = task ? dreamById.get(task.dream_id ?? taskGoal?.dream_id ?? "") : undefined;
+          const parentGoal = goal ? goalById.get(parentGoalId(goal) ?? "") : undefined;
           const Icon = card.icon;
+          const progress = goal ? goalProgress(goal, goals, tasks, completionRecords) : null;
+          const childItems = goal
+            ? [
+                ...progress!.childGoals.map((child) => child.title),
+                ...progress!.childTasks.map((task) => task.title)
+              ].slice(0, 3)
+            : card.tasks.slice(0, 3).map((task) => task.title);
+          const total = card.key === "today" ? todayTotal : progress?.total ?? 0;
+          const done = card.key === "today" ? todayDoneCount : progress?.done ?? 0;
           return (
             <button
               key={card.key}
               type="button"
-              onClick={onOpenGoals}
+              onClick={card.onClick}
               className="tap-highlight min-w-[82%] snap-start rounded-lg border border-white/80 bg-white/90 p-3 text-left shadow-soft sm:min-w-[15rem] lg:min-w-[17rem]"
             >
               <div className="flex items-center justify-between gap-2">
@@ -2553,14 +2695,48 @@ function HomeGoalCarousel({
                   {card.period}
                 </span>
                 <span className="shrink-0 rounded-full bg-mist px-2 py-1 text-[11px] font-semibold text-moss">
-                  {goal ? dueLabel(goal.deadline) : "未設定"}
+                  {goal ? dueLabel(goal.deadline) : card.key === "today" ? today() : "未設定"}
                 </span>
               </div>
               <h2 className="mt-2 line-clamp-2 min-h-[2.5rem] text-base font-bold leading-5 text-ink">
-                {goal?.title ?? card.emptyText}
+                {goal?.title ?? card.tasks[0]?.title ?? card.emptyText}
               </h2>
-              <p className="mt-2 line-clamp-1 text-xs text-ink/60">夢：{dream?.title ?? "未紐づけ"}</p>
-              {card.goals.length > 1 && <p className="mt-1 text-[11px] font-semibold text-moss">他 {card.goals.length - 1} 件</p>}
+              <p className="mt-2 line-clamp-1 text-xs text-ink/60">
+                {goal
+                  ? parentGoal
+                    ? `上位：${goalLabels[parentGoal.level]}・${parentGoal.title}`
+                    : `夢：${dream?.title ?? "未紐づけ"}`
+                  : taskGoal
+                    ? `目標：${goalLabels[taskGoal.level]}・${taskGoal.title}`
+                    : `夢：${taskDream?.title ?? "未紐づけ"}`}
+              </p>
+              <div className="mt-3">
+                <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-moss">
+                  <span>進捗</span>
+                  <span>
+                    {done} / {total}
+                  </span>
+                </div>
+                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-mist">
+                  <div className="h-full rounded-full bg-leaf" style={{ width: `${total ? Math.round((done / total) * 100) : 0}%` }} />
+                </div>
+              </div>
+              <div className="mt-2 min-h-[2.75rem] space-y-1">
+                {childItems.length > 0 ? (
+                  childItems.map((item) => (
+                    <p key={item} className="line-clamp-1 text-[11px] leading-4 text-ink/60">
+                      ・{item}
+                    </p>
+                  ))
+                ) : (
+                  <p className="text-[11px] leading-4 text-ink/45">下位項目はあとから追加できます。</p>
+                )}
+              </div>
+              {(card.goals.length > 1 || card.tasks.length > 1 || childItems.length < total) && (
+                <p className="mt-1 text-[11px] font-semibold text-moss">
+                  他 {Math.max(card.goals.length - 1, card.tasks.length - 1, total - childItems.length)} 件
+                </p>
+              )}
             </button>
           );
         })}
@@ -3269,22 +3445,26 @@ function GoalForm({
   dreams,
   goals,
   goal,
+  draft,
   onSubmit,
   onCancel
 }: {
   dreams: Dream[];
   goals: Goal[];
   goal?: Goal;
+  draft?: Partial<Goal> | null;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
 }) {
-  const [selectedDreamId, setSelectedDreamId] = useState(goal?.dream_id ?? "");
-  const [selectedLevel, setSelectedLevel] = useState<GoalLevel>(goal?.level ?? "monthly");
+  const initialDreamId = goal?.dream_id ?? draft?.dream_id ?? "";
+  const initialLevel = goal?.level ?? draft?.level ?? "monthly";
+  const [selectedDreamId, setSelectedDreamId] = useState(initialDreamId);
+  const [selectedLevel, setSelectedLevel] = useState<GoalLevel>(initialLevel);
 
   useEffect(() => {
-    setSelectedDreamId(goal?.dream_id ?? "");
-    setSelectedLevel(goal?.level ?? "monthly");
-  }, [goal?.id, goal?.dream_id, goal?.level]);
+    setSelectedDreamId(goal?.dream_id ?? draft?.dream_id ?? "");
+    setSelectedLevel(goal?.level ?? draft?.level ?? "monthly");
+  }, [goal?.id, goal?.dream_id, goal?.level, draft?.dream_id, draft?.level]);
 
   const parentCandidates = goals
     .filter((candidate) => candidate.id !== goal?.id)
@@ -3294,7 +3474,7 @@ function GoalForm({
     .sort(sortGoalsByPlan);
 
   return (
-    <form key={goal?.id ?? "new-goal"} onSubmit={onSubmit} className="space-y-4">
+    <form key={goal?.id ?? `new-goal-${draft?.parent_goal_id ?? "blank"}-${draft?.level ?? "monthly"}`} onSubmit={onSubmit} className="space-y-4">
       <Field label="対象の夢">
         <select name="dream_id" value={selectedDreamId} onChange={(event) => setSelectedDreamId(event.target.value)} className="input">
           <option value="">未紐づけ</option>
@@ -3306,10 +3486,10 @@ function GoalForm({
         </select>
       </Field>
       <Field label="目標タイトル">
-        <input name="title" required defaultValue={goal?.title} placeholder="例：事業アイデアを3つ検証する" className="input" />
+        <input name="title" required defaultValue={goal?.title ?? draft?.title ?? ""} placeholder="例：事業アイデアを3つ検証する" className="input" />
       </Field>
       <Field label="説明">
-        <textarea name="description" rows={3} defaultValue={goal?.description} className="input" />
+        <textarea name="description" rows={3} defaultValue={goal?.description ?? draft?.description ?? ""} className="input" />
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="目標の位置づけ" hint="夢から逆算して、いつ達成したい目標かを選びます。迷ったら今月目標でOKです。">
@@ -3325,11 +3505,11 @@ function GoalForm({
           </select>
         </Field>
         <Field label="目標の期限" hint="この目標をいつまでに終わらせるか。夢の期限より手前の日付にします。">
-          <DeadlineInput name="deadline" defaultValue={goal?.deadline} />
+          <DeadlineInput name="deadline" defaultValue={goal?.deadline ?? draft?.deadline} />
         </Field>
       </div>
       <Field label="つながる上位目標" hint="未選択でも保存できます。あとから5年→1年→月→週→今日につなげられます。">
-        <select key={`${goal?.id ?? "new"}-${selectedDreamId}-${selectedLevel}`} name="parent_goal_id" defaultValue={goal?.parent_goal_id ?? ""} className="input">
+        <select key={`${goal?.id ?? "new"}-${selectedDreamId}-${selectedLevel}-${draft?.parent_goal_id ?? ""}`} name="parent_goal_id" defaultValue={goal?.parent_goal_id ?? draft?.parent_goal_id ?? ""} className="input">
           <option value="">未設定</option>
           {parentCandidates.map((candidate) => (
             <option key={candidate.id} value={candidate.id}>
@@ -3350,7 +3530,8 @@ function GoalPlanFlow({
   completionRecords,
   onEdit,
   onArchive,
-  onDelete
+  onDelete,
+  onDecompose
 }: {
   goals: Goal[];
   dreams: Dream[];
@@ -3359,6 +3540,7 @@ function GoalPlanFlow({
   onEdit: (goal: Goal) => void;
   onArchive: (goal: Goal) => void;
   onDelete: (goal: Goal) => void;
+  onDecompose: (goal: Goal) => void;
 }) {
   const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
   const goalById = new Map(goals.map((goal) => [goal.id, goal]));
@@ -3389,6 +3571,7 @@ function GoalPlanFlow({
                     onEdit={() => onEdit(goal)}
                     onArchive={() => onArchive(goal)}
                     onDelete={() => onDelete(goal)}
+                    onDecompose={() => onDecompose(goal)}
                   />
                 ))}
               </div>
@@ -3418,6 +3601,7 @@ function GoalPlanFlow({
                 onEdit={() => onEdit(goal)}
                 onArchive={() => onArchive(goal)}
                 onDelete={() => onDelete(goal)}
+                onDecompose={() => onDecompose(goal)}
               />
             ))}
           </div>
@@ -3436,7 +3620,8 @@ function GoalCard({
   completionRecords,
   onEdit,
   onArchive,
-  onDelete
+  onDelete,
+  onDecompose
 }: {
   goal: Goal;
   dream?: Dream;
@@ -3447,9 +3632,11 @@ function GoalCard({
   onEdit: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  onDecompose: () => void;
 }) {
   const progress = goalProgress(goal, goals, tasks, completionRecords);
   const done = goal.status === "done";
+  const nextStep = nextPlanStep(goal.level);
   return (
     <article className="rounded-lg border border-mist bg-white p-4">
       <div className="flex items-start justify-between gap-3">
@@ -3486,6 +3673,11 @@ function GoalCard({
         </details>
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
+        {nextStep && (
+          <button className="mini-button bg-mist text-moss" onClick={onDecompose}>
+            <Plus className="h-3.5 w-3.5" /> {nextStep === "task" ? "今日へ分解" : `${goalLabels[nextStep]}へ`}
+          </button>
+        )}
         <button className="mini-button" onClick={onEdit}>
           <Edit3 className="h-3.5 w-3.5" /> 編集
         </button>
@@ -3504,30 +3696,33 @@ function TaskForm({
   dreams,
   goals,
   task,
+  draft,
   onSubmit,
   onCancel
 }: {
   dreams: Dream[];
   goals: Goal[];
   task?: Task;
+  draft?: Partial<Task> | null;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
 }) {
-  const [selectedDreamId, setSelectedDreamId] = useState(task?.dream_id ?? "");
-  useEffect(() => setSelectedDreamId(task?.dream_id ?? ""), [task?.id, task?.dream_id]);
+  const [selectedDreamId, setSelectedDreamId] = useState(task?.dream_id ?? draft?.dream_id ?? "");
+  useEffect(() => setSelectedDreamId(task?.dream_id ?? draft?.dream_id ?? ""), [task?.id, task?.dream_id, draft?.dream_id]);
   const availableGoals = goals.filter((goal) => !selectedDreamId || !goal.dream_id || goal.dream_id === selectedDreamId);
-  const selectedGoalIsValid = task?.goal_id && availableGoals.some((goal) => goal.id === task.goal_id);
+  const draftGoalId = task?.goal_id ?? draft?.goal_id ?? "";
+  const selectedGoalIsValid = draftGoalId && availableGoals.some((goal) => goal.id === draftGoalId);
 
   return (
-    <form key={task?.id ?? "new-task"} onSubmit={onSubmit} className="space-y-4">
+    <form key={task?.id ?? `new-task-${draft?.goal_id ?? "blank"}-${draft?.due_date ?? ""}`} onSubmit={onSubmit} className="space-y-4">
       <Field label="タスク名">
-        <input name="title" required defaultValue={task?.title} placeholder="例：起業計画のメモを書く" className="input" />
+        <input name="title" required defaultValue={task?.title ?? draft?.title ?? ""} placeholder="例：起業計画のメモを書く" className="input" />
       </Field>
       <Field label="メモ">
-        <textarea name="memo" rows={3} defaultValue={task?.memo} className="input" />
+        <textarea name="memo" rows={3} defaultValue={task?.memo ?? draft?.memo ?? ""} className="input" />
       </Field>
       <Field label="期限">
-        <TaskDueDateInput defaultValue={task?.due_date} />
+        <TaskDueDateInput defaultValue={task?.due_date ?? draft?.due_date} />
       </Field>
       <div className="rounded-lg border border-mist bg-white/80 p-3">
         <Field label="繰り返し">
@@ -3541,7 +3736,14 @@ function TaskForm({
         </Field>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <Field label="開始日">
-            <input name="recurrence_start_date" type="text" inputMode="numeric" placeholder="YYYY-MM-DD" defaultValue={task?.recurrence_start_date ?? task?.due_date ?? ""} className="input" />
+            <input
+              name="recurrence_start_date"
+              type="text"
+              inputMode="numeric"
+              placeholder="YYYY-MM-DD"
+              defaultValue={task?.recurrence_start_date ?? task?.due_date ?? draft?.due_date ?? ""}
+              className="input"
+            />
           </Field>
           <Field label="毎月の日付">
             <input name="recurrence_day_of_month" type="number" min={1} max={31} defaultValue={task?.recurrence_day_of_month ?? ""} className="input" />
@@ -3558,11 +3760,11 @@ function TaskForm({
       </div>
       <div className="grid grid-cols-2 gap-3">
         <label className="toggle">
-          <input name="urgent" type="checkbox" defaultChecked={task?.urgent ?? false} />
+          <input name="urgent" type="checkbox" defaultChecked={task?.urgent ?? draft?.urgent ?? false} />
           <span>緊急</span>
         </label>
         <label className="toggle">
-          <input name="important" type="checkbox" defaultChecked={task?.important ?? true} />
+          <input name="important" type="checkbox" defaultChecked={task?.important ?? draft?.important ?? true} />
           <span>重要</span>
         </label>
       </div>
@@ -3577,7 +3779,7 @@ function TaskForm({
         </select>
       </Field>
       <Field label="関連する目標">
-        <select key={`${task?.id ?? "new"}-${selectedDreamId}`} name="goal_id" defaultValue={selectedGoalIsValid ? task?.goal_id ?? "" : ""} className="input">
+        <select key={`${task?.id ?? "new"}-${selectedDreamId}-${draft?.goal_id ?? ""}`} name="goal_id" defaultValue={selectedGoalIsValid ? draftGoalId : ""} className="input">
           <option value="">未紐づけ</option>
           {availableGoals.map((goal) => (
             <option key={goal.id} value={goal.id}>
