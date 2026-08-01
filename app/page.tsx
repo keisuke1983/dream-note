@@ -7,12 +7,16 @@ import {
   ClipboardList,
   Edit3,
   Flag,
+  Heart,
   Home,
+  Image as ImageIcon,
   Inbox,
   ListChecks,
   LogOut,
   Moon,
+  PenLine,
   Plus,
+  Repeat2,
   Settings,
   Sparkles,
   Target,
@@ -69,18 +73,55 @@ type Task = {
   status: "todo" | "doing" | "done" | "archived";
   completed_at: string | null;
   reschedule_count?: number;
+  last_rescheduled_at?: string | null;
+  rescheduled_from?: DateValue;
+  rescheduled_to?: DateValue;
   reschedule_history?: RescheduleHistoryItem[];
+  recurrence_type?: RecurrenceType;
+  recurrence_weekdays?: number[];
+  recurrence_day_of_month?: number | null;
+  recurrence_start_date?: DateValue;
+  recurrence_active?: boolean;
   created_at: string;
   updated_at: string;
 };
 
 type RescheduleDestination = "tomorrow" | "this_week" | "next_week" | "this_month" | "custom" | "hold" | "drop";
+type RecurrenceType = "none" | "daily" | "weekdays" | "weekly" | "monthly";
 
 type RescheduleHistoryItem = {
   rescheduled_at: string;
   from_due_date: DateValue;
   to_due_date: DateValue;
   destination: RescheduleDestination;
+};
+
+type TaskCompletionRecord = {
+  id: string;
+  user_id: string;
+  task_id: string;
+  completion_date: string;
+  completed_at: string;
+  title_snapshot: string;
+  dream_id: string | null;
+  goal_id: string | null;
+  urgent: boolean;
+  important: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type MotivationCard = {
+  id: string;
+  user_id: string;
+  title: string;
+  body: string;
+  kind: "principle" | "dream" | "family" | "reason" | "future" | "words" | "photo";
+  image_url: string;
+  sort_order: number;
+  visible: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
 type InboxItem = {
@@ -161,10 +202,22 @@ type AppData = {
   todayAiSuggestions: TodayAiSuggestionRecord[];
   weeklyAiReviews: WeeklyAiReviewRecord[];
   reflections: Reflection[];
+  taskCompletionRecords: TaskCompletionRecord[];
+  motivationCards: MotivationCard[];
   profile: Profile;
 };
 
-type CollectionKey = "dreams" | "goals" | "tasks" | "inbox" | "aiSuggestions" | "todayAiSuggestions" | "weeklyAiReviews" | "reflections";
+type CollectionKey =
+  | "dreams"
+  | "goals"
+  | "tasks"
+  | "inbox"
+  | "aiSuggestions"
+  | "todayAiSuggestions"
+  | "weeklyAiReviews"
+  | "reflections"
+  | "taskCompletionRecords"
+  | "motivationCards";
 type Tab = "home" | "dreams" | "goals" | "tasks" | "matrix" | "inbox" | "reflect" | "settings";
 type Notice = { type: "success" | "error"; message: string };
 type GoalLevel = "five_year" | "one_year" | "monthly" | "weekly" | "daily" | "ten_year" | "three_year";
@@ -241,6 +294,24 @@ const inboxKindLabels: Record<InboxItem["kind"], string> = {
   thought: "気づき"
 };
 
+const recurrenceLabels: Record<RecurrenceType, string> = {
+  none: "なし",
+  daily: "毎日",
+  weekdays: "曜日指定",
+  weekly: "毎週",
+  monthly: "毎月"
+};
+
+const motivationKindLabels: Record<MotivationCard["kind"], string> = {
+  principle: "人生理念",
+  dream: "夢",
+  family: "家族",
+  reason: "理由",
+  future: "未来",
+  words: "言葉",
+  photo: "写真"
+};
+
 const navItems: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: "home", label: "ホーム", icon: Home },
   { key: "dreams", label: "夢", icon: Sparkles },
@@ -274,7 +345,9 @@ const initialData = (): AppData => ({
   aiSuggestions: [],
   todayAiSuggestions: [],
   weeklyAiReviews: [],
-  reflections: []
+  reflections: [],
+  taskCompletionRecords: [],
+  motivationCards: []
 });
 
 function normalizeDate(value: FormDataEntryValue | null): DateValue | "invalid" {
@@ -314,6 +387,8 @@ function getStoredData() {
       todayAiSuggestions: parsed.todayAiSuggestions ?? [],
       weeklyAiReviews: parsed.weeklyAiReviews ?? [],
       reflections: parsed.reflections ?? [],
+      taskCompletionRecords: parsed.taskCompletionRecords ?? [],
+      motivationCards: parsed.motivationCards ?? [],
       profile: { ...base.profile, ...parsed.profile }
     } satisfies AppData;
   } catch {
@@ -380,13 +455,44 @@ function taskRescheduleCount(task: Task) {
   return task.reschedule_count ?? task.reschedule_history?.length ?? 0;
 }
 
+function taskRecurrenceType(task: Task): RecurrenceType {
+  return task.recurrence_type ?? "none";
+}
+
+function isRecurringTask(task: Task) {
+  return taskRecurrenceType(task) !== "none" && task.recurrence_active !== false;
+}
+
+function isTaskCompletedOn(taskId: string, date: string, records: TaskCompletionRecord[]) {
+  return records.some((record) => record.task_id === taskId && record.completion_date === date);
+}
+
+function isRecurringTaskDueOn(task: Task, date: string) {
+  if (!isRecurringTask(task)) return false;
+  const startDate = task.recurrence_start_date ?? task.due_date ?? task.created_at.slice(0, 10);
+  if (startDate && date < startDate) return false;
+  const target = new Date(`${date}T00:00:00`);
+  const weekday = target.getDay();
+  const dayOfMonth = target.getDate();
+  const recurrenceType = taskRecurrenceType(task);
+  if (recurrenceType === "daily") return true;
+  if (recurrenceType === "weekdays") return (task.recurrence_weekdays?.length ? task.recurrence_weekdays : [1, 2, 3, 4, 5]).includes(weekday);
+  if (recurrenceType === "weekly") return weekday === new Date(`${startDate}T00:00:00`).getDay();
+  if (recurrenceType === "monthly") return dayOfMonth === (task.recurrence_day_of_month ?? new Date(`${startDate}T00:00:00`).getDate());
+  return false;
+}
+
+function completionRecordId(taskId: string, date: string) {
+  return `${taskId}-${date}`;
+}
+
 function futureOrTomorrow(date: string) {
   return dateDistance(date) > 0 ? date : addDays(today(), 1);
 }
 
 function sanitizeForDatabase<T extends Record<string, unknown>>(record: T) {
   return Object.fromEntries(
-    Object.entries(record).map(([key, value]) => [key, value === "" ? null : value])
+    Object.entries(record).map(([key, value]) => [key, value === "" || value === undefined ? null : value])
   );
 }
 
@@ -402,11 +508,13 @@ export default function App() {
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingInboxId, setEditingInboxId] = useState<string | null>(null);
+  const [editingMotivationCardId, setEditingMotivationCardId] = useState<string | null>(null);
   const [reschedulingTaskId, setReschedulingTaskId] = useState<string | null>(null);
   const [dreamFormVersion, setDreamFormVersion] = useState(0);
   const [goalFormVersion, setGoalFormVersion] = useState(0);
   const [taskFormVersion, setTaskFormVersion] = useState(0);
   const [inboxFormVersion, setInboxFormVersion] = useState(0);
+  const [motivationCardFormVersion, setMotivationCardFormVersion] = useState(0);
   const [aiLoadingDreamId, setAiLoadingDreamId] = useState<string | null>(null);
   const [aiTodayLoading, setAiTodayLoading] = useState(false);
   const [aiWeeklyLoading, setAiWeeklyLoading] = useState(false);
@@ -418,6 +526,7 @@ export default function App() {
   const editingGoal = data.goals.find((goal) => goal.id === editingGoalId);
   const editingTask = data.tasks.find((task) => task.id === editingTaskId);
   const editingInboxItem = data.inbox.find((item) => item.id === editingInboxId);
+  const editingMotivationCard = data.motivationCards.find((card) => card.id === editingMotivationCardId);
   const reschedulingTask = data.tasks.find((task) => task.id === reschedulingTaskId);
   const activeGoals = data.goals.filter((goal) => goal.status !== "archived");
   const linkableDreams = data.dreams.filter((dream) => dream.status === "active");
@@ -457,7 +566,19 @@ export default function App() {
   async function loadRemoteData(activeUserId: string, email?: string) {
     if (!supabase) return;
     try {
-      const [dreams, goals, tasks, inboxItems, aiSuggestions, todayAiSuggestions, weeklyAiReviews, reflections, profiles] = await Promise.all([
+      const [
+        dreams,
+        goals,
+        tasks,
+        inboxItems,
+        aiSuggestions,
+        todayAiSuggestions,
+        weeklyAiReviews,
+        reflections,
+        taskCompletionRecords,
+        motivationCards,
+        profiles
+      ] = await Promise.all([
         supabase.from("dreams").select("*").eq("user_id", activeUserId).order("created_at", { ascending: false }),
         supabase.from("goals").select("*").eq("user_id", activeUserId).order("created_at", { ascending: false }),
         supabase.from("tasks").select("*").eq("user_id", activeUserId).order("created_at", { ascending: false }),
@@ -466,9 +587,23 @@ export default function App() {
         supabase.from("today_ai_suggestions").select("*").eq("user_id", activeUserId).order("created_at", { ascending: false }),
         supabase.from("weekly_ai_reviews").select("*").eq("user_id", activeUserId).order("created_at", { ascending: false }),
         supabase.from("daily_reflections").select("*").eq("user_id", activeUserId).order("reflection_date", { ascending: false }),
+        supabase.from("task_completion_records").select("*").eq("user_id", activeUserId).order("completed_at", { ascending: false }),
+        supabase.from("motivation_cards").select("*").eq("user_id", activeUserId).order("sort_order", { ascending: true }),
         supabase.from("profiles").select("*").eq("user_id", activeUserId).maybeSingle()
       ]);
-      const firstError = [dreams, goals, tasks, inboxItems, aiSuggestions, todayAiSuggestions, weeklyAiReviews, reflections, profiles].find((result) => result.error)?.error;
+      const firstError = [
+        dreams,
+        goals,
+        tasks,
+        inboxItems,
+        aiSuggestions,
+        todayAiSuggestions,
+        weeklyAiReviews,
+        reflections,
+        taskCompletionRecords,
+        motivationCards,
+        profiles
+      ].find((result) => result.error)?.error;
       if (firstError) {
         setNotice({ type: "error", message: `クラウド読込に失敗しました: ${firstError.message}` });
       }
@@ -481,6 +616,8 @@ export default function App() {
         todayAiSuggestions: (todayAiSuggestions.data ?? []) as TodayAiSuggestionRecord[],
         weeklyAiReviews: (weeklyAiReviews.data ?? []) as WeeklyAiReviewRecord[],
         reflections: (reflections.data ?? []) as Reflection[],
+        taskCompletionRecords: (taskCompletionRecords.data ?? []) as TaskCompletionRecord[],
+        motivationCards: (motivationCards.data ?? []) as MotivationCard[],
         profile:
           ((profiles.data as Profile | null) ??
             ({
@@ -542,16 +679,26 @@ export default function App() {
     [data.tasks]
   );
 
+  const todayCompletionRecords = useMemo(
+    () => data.taskCompletionRecords.filter((record) => record.completion_date === today()).sort((a, b) => b.completed_at.localeCompare(a.completed_at)),
+    [data.taskCompletionRecords]
+  );
+
   const recentlyActedDreamIds = useMemo(() => {
     const goalMap = new Map(data.goals.map((goal) => [goal.id, goal]));
     const sevenDaysAgo = Date.now() - 7 * 86400000;
     return new Set(
-      data.tasks
-        .filter((task) => task.status === "done" && task.completed_at && new Date(task.completed_at).getTime() >= sevenDaysAgo)
-        .map((task) => task.dream_id ?? goalMap.get(task.goal_id ?? "")?.dream_id)
+      [
+        ...data.tasks
+          .filter((task) => task.status === "done" && task.completed_at && new Date(task.completed_at).getTime() >= sevenDaysAgo)
+          .map((task) => task.dream_id ?? goalMap.get(task.goal_id ?? "")?.dream_id),
+        ...data.taskCompletionRecords
+          .filter((record) => new Date(record.completed_at).getTime() >= sevenDaysAgo)
+          .map((record) => record.dream_id ?? goalMap.get(record.goal_id ?? "")?.dream_id)
+      ]
         .filter(Boolean) as string[]
     );
-  }, [data.tasks, data.goals]);
+  }, [data.tasks, data.taskCompletionRecords, data.goals]);
 
   const todayTasks = useMemo(() => {
     const goalMap = new Map(data.goals.map((goal) => [goal.id, goal]));
@@ -571,12 +718,13 @@ export default function App() {
     };
     return [...activeTasks]
       .filter((task) => {
+        if (isRecurringTask(task)) return isRecurringTaskDueOn(task, today()) && !isTaskCompletedOn(task.id, today(), data.taskCompletionRecords);
         const distance = dateDistance(task.due_date);
         const linkedDreamId = dreamIdFor(task);
         return task.urgent || task.important || distance <= 3 || Boolean(linkedDreamId && !recentlyActedDreamIds.has(linkedDreamId));
       })
       .sort((a, b) => score(b) - score(a));
-  }, [activeTasks, data.goals, recentlyActedDreamIds]);
+  }, [activeTasks, data.goals, data.taskCompletionRecords, recentlyActedDreamIds]);
 
   const todayAiInput = useMemo<TodayAiSuggestionInput>(() => {
     const goalMap = new Map(data.goals.map((goal) => [goal.id, goal]));
@@ -666,13 +814,58 @@ export default function App() {
     [activeGoals]
   );
 
+  const visibleMotivationCards = useMemo(
+    () => data.motivationCards.filter((card) => card.visible).sort((a, b) => a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at)),
+    [data.motivationCards]
+  );
+  const motivationCardIndex = useMemo(() => {
+    if (visibleMotivationCards.length === 0 || typeof window === "undefined") return 0;
+    const key = "ai-dream-note-motivation-card";
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(key) ?? "{}") as { date?: string; index?: number };
+      if (saved.date === today() && typeof saved.index === "number") return saved.index % visibleMotivationCards.length;
+      const nextIndex = ((saved.index ?? -1) + 1) % visibleMotivationCards.length;
+      window.localStorage.setItem(key, JSON.stringify({ date: today(), index: nextIndex }));
+      return nextIndex;
+    } catch {
+      return 0;
+    }
+  }, [visibleMotivationCards]);
+
   const currentWeek = useMemo(() => weekBounds(), []);
   const weeklyReviewInput = useMemo<WeeklyReviewInput>(() => {
     const goalMap = new Map(data.goals.map((goal) => [goal.id, goal]));
     const dreamMap = new Map(data.dreams.map((dream) => [dream.id, dream]));
+    const taskMap = new Map(data.tasks.map((task) => [task.id, task]));
     const taskDreamId = (task: Task) => task.dream_id ?? goalMap.get(task.goal_id ?? "")?.dream_id ?? null;
     const inWeek = (date: string | null | undefined) => Boolean(date && date.slice(0, 10) >= currentWeek.weekStart && date.slice(0, 10) <= currentWeek.weekEnd);
-    const completedTasks = data.tasks.filter((task) => task.status === "done" && inWeek(task.completed_at));
+    const completedTasks = [
+      ...data.tasks.filter((task) => task.status === "done" && inWeek(task.completed_at)),
+      ...data.taskCompletionRecords
+        .filter((record) => inWeek(record.completed_at) && taskMap.get(record.task_id)?.status !== "done")
+        .map((record) => {
+          const original = taskMap.get(record.task_id);
+          return {
+            ...(original ??
+              ({
+                id: record.task_id,
+                user_id: record.user_id,
+                dream_id: record.dream_id,
+                goal_id: record.goal_id,
+                title: record.title_snapshot,
+                memo: "",
+                due_date: record.completion_date,
+                urgent: record.urgent,
+                important: record.important,
+                status: "todo",
+                completed_at: record.completed_at,
+                created_at: record.created_at,
+                updated_at: record.updated_at
+              } as Task)),
+            completed_at: record.completed_at
+          } as Task;
+        })
+    ];
     const completedByDream = new Map<string, { total: number; important: number }>();
     for (const task of completedTasks) {
       const dreamId = taskDreamId(task);
@@ -731,7 +924,7 @@ export default function App() {
         unlinked_completed: completedTasks.filter((task) => !taskDreamId(task)).length
       }
     };
-  }, [currentWeek.weekEnd, currentWeek.weekStart, data.dreams, data.goals, data.reflections, data.tasks]);
+  }, [currentWeek.weekEnd, currentWeek.weekStart, data.dreams, data.goals, data.reflections, data.taskCompletionRecords, data.tasks]);
 
   const weeklyReviewContextHash = useMemo(() => simpleHash(JSON.stringify(weeklyReviewInput)), [weeklyReviewInput]);
   const weeklyAiReview = useMemo(
@@ -840,6 +1033,18 @@ export default function App() {
       setNotice({ type: "error", message: "期限は YYYY-MM-DD 形式で入力してください。" });
       return;
     }
+    const recurrenceType = String(form.get("recurrence_type") ?? existing?.recurrence_type ?? "none") as RecurrenceType;
+    const recurrenceStartDate = normalizeDate(form.get("recurrence_start_date")) || dueDate;
+    if (recurrenceStartDate === "invalid") {
+      setNotice({ type: "error", message: "繰り返し開始日は YYYY-MM-DD 形式で入力してください。" });
+      return;
+    }
+    const recurrenceWeekdays = form
+      .getAll("recurrence_weekdays")
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value));
+    const recurrenceDayOfMonthValue = Number(form.get("recurrence_day_of_month") ?? "");
+    const recurrenceDayOfMonth = recurrenceDayOfMonthValue >= 1 && recurrenceDayOfMonthValue <= 31 ? recurrenceDayOfMonthValue : null;
     const task: Task = {
       id: existing?.id ?? crypto.randomUUID(),
       user_id: userId,
@@ -853,7 +1058,15 @@ export default function App() {
       status: existing?.status ?? "todo",
       completed_at: existing?.completed_at ?? null,
       reschedule_count: existing?.reschedule_count ?? 0,
+      last_rescheduled_at: existing?.last_rescheduled_at ?? null,
+      rescheduled_from: existing?.rescheduled_from ?? null,
+      rescheduled_to: existing?.rescheduled_to ?? null,
       reschedule_history: existing?.reschedule_history ?? [],
+      recurrence_type: recurrenceType,
+      recurrence_weekdays: recurrenceType === "weekdays" ? recurrenceWeekdays : [],
+      recurrence_day_of_month: recurrenceType === "monthly" ? recurrenceDayOfMonth : null,
+      recurrence_start_date: recurrenceType === "none" ? null : recurrenceStartDate,
+      recurrence_active: recurrenceType !== "none",
       created_at: existing?.created_at ?? now(),
       updated_at: now()
     };
@@ -1157,9 +1370,33 @@ export default function App() {
   }
 
   async function completeTask(task: Task) {
-    const updated: Task = { ...task, status: "done", completed_at: now(), updated_at: now() };
+    const completedAt = now();
+    const completionDate = today();
+    const record: TaskCompletionRecord = {
+      id: completionRecordId(task.id, completionDate),
+      user_id: userId,
+      task_id: task.id,
+      completion_date: completionDate,
+      completed_at: completedAt,
+      title_snapshot: task.title,
+      dream_id: task.dream_id,
+      goal_id: task.goal_id,
+      urgent: task.urgent,
+      important: task.important,
+      created_at: completedAt,
+      updated_at: completedAt
+    };
+    const updated: Task = isRecurringTask(task)
+      ? { ...task, completed_at: completedAt, updated_at: completedAt }
+      : { ...task, status: "done", completed_at: completedAt, updated_at: completedAt };
+
+    const recordSaved = await persist("task_completion_records", record);
+    if (!recordSaved) return;
+    const taskSaved = await persist("tasks", updated);
+    if (!taskSaved) return;
+    upsertLocal("taskCompletionRecords", record);
     upsertLocal("tasks", updated);
-    await persist("tasks", updated);
+    setNotice({ type: "success", message: "完了しました。" });
   }
 
   async function updateDreamStatus(dream: Dream, status: Dream["status"]) {
@@ -1264,6 +1501,9 @@ export default function App() {
       due_date: nextDueDate,
       status: nextStatus,
       reschedule_count: taskRescheduleCount(task) + 1,
+      last_rescheduled_at: historyItem.rescheduled_at,
+      rescheduled_from: task.due_date,
+      rescheduled_to: nextDueDate,
       reschedule_history: [...(task.reschedule_history ?? []), historyItem],
       updated_at: now()
     };
@@ -1380,6 +1620,42 @@ export default function App() {
     setNotice({ type: "success", message: "今日の振り返りを保存しました。" });
   }
 
+  async function saveMotivationCard(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const existing = editingMotivationCard;
+    if (!existing && data.motivationCards.length >= 5) {
+      setNotice({ type: "error", message: "モチベーションカードは最大5枚までです。" });
+      return;
+    }
+    const card: MotivationCard = {
+      id: existing?.id ?? crypto.randomUUID(),
+      user_id: userId,
+      title: String(form.get("title") ?? ""),
+      body: String(form.get("body") ?? ""),
+      kind: String(form.get("kind") ?? "reason") as MotivationCard["kind"],
+      image_url: String(form.get("image_url") ?? ""),
+      sort_order: Number(form.get("sort_order") ?? existing?.sort_order ?? data.motivationCards.length + 1),
+      visible: form.get("visible") === "on",
+      created_at: existing?.created_at ?? now(),
+      updated_at: now()
+    };
+    const saved = await persist("motivation_cards", card);
+    if (!saved) return;
+    upsertLocal("motivationCards", card);
+    setEditingMotivationCardId(null);
+    if (!existing) setMotivationCardFormVersion((version) => version + 1);
+    setNotice({ type: "success", message: "保存しました。" });
+  }
+
+  async function toggleMotivationCard(card: MotivationCard) {
+    const updated: MotivationCard = { ...card, visible: !card.visible, updated_at: now() };
+    const saved = await persist("motivation_cards", updated);
+    if (!saved) return;
+    upsertLocal("motivationCards", updated);
+    setNotice({ type: "success", message: "保存しました。" });
+  }
+
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -1433,6 +1709,8 @@ export default function App() {
               onReschedule={(task) => setReschedulingTaskId(task.id)}
             />
           </Panel>
+          <TodayCompletedPanel records={todayCompletionRecords} tasks={data.tasks} dreams={data.dreams} goals={data.goals} />
+          <MotivationCardStrip cards={visibleMotivationCards} startIndex={motivationCardIndex} onEdit={() => setTab("settings")} />
           <Panel title="1か月後の目標" icon={Target}>
             <HomeGoalList goals={homeMonthlyGoals} dreams={data.dreams} emptyText="今月の目標を登録すると、今日やる理由が見えやすくなります。" />
           </Panel>
@@ -1607,6 +1885,17 @@ export default function App() {
               </button>
             </form>
           </Panel>
+          <Panel title="モチベーションカード" icon={Heart}>
+            <MotivationCardManager
+              key={editingMotivationCard?.id ?? `new-motivation-${motivationCardFormVersion}`}
+              cards={data.motivationCards}
+              editingCard={editingMotivationCard}
+              onSubmit={saveMotivationCard}
+              onEdit={(card) => setEditingMotivationCardId(card.id)}
+              onCancel={() => setEditingMotivationCardId(null)}
+              onToggle={(card) => void toggleMotivationCard(card)}
+            />
+          </Panel>
           <Panel title="ログイン" icon={LogOut}>
             {hasSupabaseConfig ? (
               user ? (
@@ -1733,6 +2022,177 @@ function HeroStats({ dreams, goals, tasks }: { dreams: Dream[]; goals: Goal[]; t
   );
 }
 
+function RedPenText({ children }: { children: React.ReactNode }) {
+  return <span className="red-pen-text">{children}</span>;
+}
+
+function TodayCompletedPanel({
+  records,
+  tasks,
+  dreams,
+  goals
+}: {
+  records: TaskCompletionRecord[];
+  tasks: Task[];
+  dreams: Dream[];
+  goals: Goal[];
+}) {
+  if (records.length === 0) return null;
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
+  const goalById = new Map(goals.map((goal) => [goal.id, goal]));
+
+  return (
+    <Panel title="今日やり遂げたこと" icon={PenLine}>
+      <div className="space-y-3">
+        <div className="rounded-lg bg-dawn/15 p-3 text-sm font-bold text-clay">今日は夢に{records.length}歩近づきました。</div>
+        <div className="space-y-2">
+          {records.slice(0, 6).map((record) => {
+            const task = taskById.get(record.task_id);
+            const goal = goalById.get(record.goal_id ?? task?.goal_id ?? "");
+            const dream = dreamById.get(record.dream_id ?? task?.dream_id ?? goal?.dream_id ?? "");
+            return (
+              <article key={record.id} className="rounded-lg border border-mist bg-white/90 p-3">
+                <h3 className="break-words font-bold text-ink">
+                  <RedPenText>{record.title_snapshot}</RedPenText>
+                </h3>
+                {(goal || dream) && (
+                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-moss">
+                    {goal?.title ?? "目標未設定"}
+                    {dream ? ` / ${dream.title}` : ""}
+                  </p>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function MotivationCardStrip({
+  cards,
+  startIndex,
+  onEdit
+}: {
+  cards: MotivationCard[];
+  startIndex: number;
+  onEdit: () => void;
+}) {
+  if (cards.length === 0) return null;
+  const orderedCards = [...cards.slice(startIndex), ...cards.slice(0, startIndex)];
+  return (
+    <section className="rounded-lg border border-mist bg-white/80 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-xs font-bold text-moss">今日の原点</p>
+        <button className="text-xs font-bold text-clay" onClick={onEdit}>
+          編集
+        </button>
+      </div>
+      <div className="flex snap-x gap-3 overflow-x-auto pb-1">
+        {orderedCards.map((card) => (
+          <article key={card.id} className="min-w-full snap-start rounded-lg bg-mist/60 p-3">
+            <div className="flex items-start gap-3">
+              {card.image_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={card.image_url} alt="" className="h-16 w-16 shrink-0 rounded-lg object-cover" />
+              ) : (
+                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-white text-clay">
+                  <ImageIcon className="h-5 w-5" />
+                </div>
+              )}
+              <div className="min-w-0">
+                <p className="text-[11px] font-bold text-clay">{motivationKindLabels[card.kind]}</p>
+                <h3 className="mt-1 line-clamp-1 font-bold text-ink">{card.title}</h3>
+                <p className="mt-1 line-clamp-2 text-sm leading-6 text-ink/70">{card.body}</p>
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MotivationCardManager({
+  cards,
+  editingCard,
+  onSubmit,
+  onEdit,
+  onCancel,
+  onToggle
+}: {
+  cards: MotivationCard[];
+  editingCard?: MotivationCard;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onEdit: (card: MotivationCard) => void;
+  onCancel: () => void;
+  onToggle: (card: MotivationCard) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <form onSubmit={onSubmit} className="space-y-3">
+        <Field label="タイトル">
+          <input name="title" required defaultValue={editingCard?.title} className="input" />
+        </Field>
+        <Field label="本文">
+          <textarea name="body" rows={3} required defaultValue={editingCard?.body} className="input" />
+        </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="種類">
+            <select name="kind" defaultValue={editingCard?.kind ?? "reason"} className="input">
+              {Object.entries(motivationKindLabels).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="並び順">
+            <input name="sort_order" type="number" min={1} defaultValue={editingCard?.sort_order ?? cards.length + 1} className="input" />
+          </Field>
+        </div>
+        <Field label="画像URL">
+          <input name="image_url" type="url" defaultValue={editingCard?.image_url} className="input" />
+        </Field>
+        <label className="toggle">
+          <input name="visible" type="checkbox" defaultChecked={editingCard?.visible ?? true} />
+          <span>ホームに表示</span>
+        </label>
+        <FormActions editing={Boolean(editingCard)} saveLabel={editingCard ? "カードを更新" : "カードを保存"} onCancel={onCancel} />
+      </form>
+      {cards.length > 0 && (
+        <div className="space-y-2">
+          {cards
+            .slice()
+            .sort((a, b) => a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at))
+            .map((card) => (
+              <article key={card.id} className="rounded-lg border border-mist bg-white p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-clay">{motivationKindLabels[card.kind]}</p>
+                    <h3 className="mt-1 line-clamp-1 font-bold text-ink">{card.title}</h3>
+                    <p className="mt-1 line-clamp-2 text-sm text-ink/60">{card.body}</p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">{card.visible ? "表示" : "非表示"}</span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button className="mini-button" onClick={() => onEdit(card)}>
+                    <Edit3 className="h-3.5 w-3.5" /> 編集
+                  </button>
+                  <button className="mini-button" onClick={() => onToggle(card)}>
+                    <Archive className="h-3.5 w-3.5" /> {card.visible ? "非表示" : "表示"}
+                  </button>
+                </div>
+              </article>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HomeTodayPanel({
   suggestion,
   todayTasks,
@@ -1805,6 +2265,11 @@ function HomeTodayPanel({
                 {dueLabel(task.due_date)}
               </span>
               {recommendation && <span className="rounded-full bg-ink px-2 py-1 text-xs font-bold text-white">{recommendation.priority_label}</span>}
+              {isRecurringTask(task) && (
+                <span className="rounded-full bg-leaf/15 px-2 py-1 text-xs font-bold text-moss">
+                  <Repeat2 className="inline h-3 w-3" /> {recurrenceLabels[taskRecurrenceType(task)]}
+                </span>
+              )}
               {taskRescheduleCount(task) > 0 && <span className="rounded-full bg-dawn/20 px-2 py-1 text-xs font-bold text-clay">転記{taskRescheduleCount(task)}回</span>}
             </div>
             <h3 className={`${prominent ? "text-lg" : "text-base"} mt-2 font-bold text-ink`}>{task.title}</h3>
@@ -2747,6 +3212,33 @@ function TaskForm({
       <Field label="期限">
         <TaskDueDateInput defaultValue={task?.due_date} />
       </Field>
+      <div className="rounded-lg border border-mist bg-white/80 p-3">
+        <Field label="繰り返し">
+          <select name="recurrence_type" defaultValue={taskRecurrenceType(task ?? ({} as Task))} className="input">
+            {Object.entries(recurrenceLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <Field label="開始日">
+            <input name="recurrence_start_date" type="text" inputMode="numeric" placeholder="YYYY-MM-DD" defaultValue={task?.recurrence_start_date ?? task?.due_date ?? ""} className="input" />
+          </Field>
+          <Field label="毎月の日付">
+            <input name="recurrence_day_of_month" type="number" min={1} max={31} defaultValue={task?.recurrence_day_of_month ?? ""} className="input" />
+          </Field>
+        </div>
+        <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-7">
+          {[0, 1, 2, 3, 4, 5, 6].map((weekday) => (
+            <label key={weekday} className="toggle justify-center px-2 text-xs">
+              <input name="recurrence_weekdays" type="checkbox" value={weekday} defaultChecked={(task?.recurrence_weekdays ?? [1, 2, 3, 4, 5]).includes(weekday)} />
+              <span>{["日", "月", "火", "水", "木", "金", "土"][weekday]}</span>
+            </label>
+          ))}
+        </div>
+      </div>
       <div className="grid grid-cols-2 gap-3">
         <label className="toggle">
           <input name="urgent" type="checkbox" defaultChecked={task?.urgent ?? false} />
@@ -2893,6 +3385,11 @@ function TaskCard({
               {dueLabel(task.due_date)}
             </span>
             {taskRescheduleCount(task) > 0 && <span className="rounded-full bg-dawn/20 px-2 py-1 text-xs font-bold text-clay">転記{taskRescheduleCount(task)}回</span>}
+            {isRecurringTask(task) && (
+              <span className="rounded-full bg-leaf/15 px-2 py-1 text-xs font-bold text-moss">
+                <Repeat2 className="inline h-3 w-3" /> {recurrenceLabels[taskRecurrenceType(task)]}
+              </span>
+            )}
           </div>
           <h3 className="mt-2 font-bold text-ink">{task.title}</h3>
           {task.memo && <p className="mt-1 text-sm leading-6 text-ink/65">{task.memo}</p>}
