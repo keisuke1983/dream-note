@@ -303,6 +303,14 @@ function nextPlanStep(level: GoalLevel): GoalLevel | "task" | null {
   return null;
 }
 
+function parseLineItems(value: FormDataEntryValue | null) {
+  return String(value ?? "")
+    .split(/\r?\n/)
+    .map((item) => item.trim().replace(/^[-・\d.\s]+/, "").trim())
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
 const inboxKindLabels: Record<InboxItem["kind"], string> = {
   someday: "いつか",
   idea: "アイデア",
@@ -1135,15 +1143,78 @@ export default function App() {
       created_at: existing?.created_at ?? now(),
       updated_at: now()
     };
+    const childTitles = parseLineItems(form.get("child_items"));
+    const nextStep = nextPlanStep(goal.level);
+    const childGoals: Goal[] =
+      nextStep && nextStep !== "task"
+        ? childTitles.map((title) => ({
+            id: crypto.randomUUID(),
+            user_id: userId,
+            dream_id: goal.dream_id,
+            parent_goal_id: goal.id,
+            title,
+            description: "",
+            level: nextStep,
+            category: goal.category,
+            deadline: goal.deadline,
+            status: "todo",
+            created_at: now(),
+            updated_at: now()
+          }))
+        : [];
+    const childTasks: Task[] =
+      nextStep === "task"
+        ? childTitles.map((title) => ({
+            id: crypto.randomUUID(),
+            user_id: userId,
+            dream_id: goal.dream_id,
+            goal_id: goal.id,
+            title,
+            memo: "",
+            due_date: today(),
+            urgent: false,
+            important: true,
+            status: "todo",
+            completed_at: null,
+            reschedule_count: 0,
+            last_rescheduled_at: null,
+            rescheduled_from: null,
+            rescheduled_to: null,
+            reschedule_history: [],
+            recurrence_type: "none",
+            recurrence_weekdays: [],
+            recurrence_day_of_month: null,
+            recurrence_start_date: null,
+            recurrence_active: false,
+            created_at: now(),
+            updated_at: now()
+          }))
+        : [];
     const saved = await persist("goals", goal);
     if (!saved) return;
+    for (const childGoal of childGoals) {
+      const childSaved = await persist("goals", childGoal);
+      if (!childSaved) {
+        setNotice({ type: "error", message: "目標は保存しましたが、達成するためのタスクの保存に失敗しました。入力内容を確認してください。" });
+        return;
+      }
+    }
+    for (const childTask of childTasks) {
+      const childSaved = await persist("tasks", childTask);
+      if (!childSaved) {
+        setNotice({ type: "error", message: "目標は保存しましたが、今日やることの保存に失敗しました。入力内容を確認してください。" });
+        return;
+      }
+    }
     upsertLocal("goals", goal);
+    childGoals.forEach((childGoal) => upsertLocal("goals", childGoal));
+    childTasks.forEach((childTask) => upsertLocal("tasks", childTask));
     setEditingGoalId(null);
     if (!existing) {
       setGoalDraft(null);
       setGoalFormVersion((version) => version + 1);
     }
-    setNotice({ type: "success", message: existing ? "目標を更新しました。" : "目標を保存しました。" });
+    setNotice({ type: "success", message: "保存しました。" });
   }
 
   async function saveTask(event: FormEvent<HTMLFormElement>) {
@@ -2038,6 +2109,9 @@ export default function App() {
               key={editingGoal?.id ?? `new-goal-${goalFormVersion}`}
               dreams={linkableDreams}
               goals={activeGoals}
+              tasks={data.tasks}
+              inbox={data.inbox}
+              completionRecords={data.taskCompletionRecords}
               goal={editingGoal}
               draft={goalDraft}
               onSubmit={saveGoal}
@@ -3480,6 +3554,9 @@ function AiSuggestionPanel({
 function GoalForm({
   dreams,
   goals,
+  tasks,
+  inbox,
+  completionRecords,
   goal,
   draft,
   onSubmit,
@@ -3487,6 +3564,9 @@ function GoalForm({
 }: {
   dreams: Dream[];
   goals: Goal[];
+  tasks: Task[];
+  inbox: InboxItem[];
+  completionRecords: TaskCompletionRecord[];
   goal?: Goal;
   draft?: Partial<Goal> | null;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -3496,10 +3576,12 @@ function GoalForm({
   const initialLevel = goal?.level ?? draft?.level ?? "monthly";
   const [selectedDreamId, setSelectedDreamId] = useState(initialDreamId);
   const [selectedLevel, setSelectedLevel] = useState<GoalLevel>(initialLevel);
+  const [relatedFilter, setRelatedFilter] = useState("");
 
   useEffect(() => {
     setSelectedDreamId(goal?.dream_id ?? draft?.dream_id ?? "");
     setSelectedLevel(goal?.level ?? draft?.level ?? "monthly");
+    setRelatedFilter("");
   }, [goal?.id, goal?.dream_id, goal?.level, draft?.dream_id, draft?.level]);
 
   const blockedParentIds = goal ? goalDescendantIds(goal.id, goals) : new Set<string>();
@@ -3510,55 +3592,116 @@ function GoalForm({
     .filter((candidate) => !selectedDreamId || !candidate.dream_id || candidate.dream_id === selectedDreamId)
     .filter((candidate) => parentGoalLevelsByLevel[selectedLevel]?.includes(candidate.level))
     .sort(sortGoalsByPlan);
+  const childGoalItems = goal ? goals.filter((candidate) => parentGoalId(candidate) === goal.id && candidate.status !== "archived").sort(sortGoalsByPlan) : [];
+  const childTaskItems = goal ? tasks.filter((task) => task.goal_id === goal.id && task.status !== "archived").sort((a, b) => dateDistance(a.due_date) - dateDistance(b.due_date) || a.created_at.localeCompare(b.created_at)) : [];
+  const completionTaskIds = new Set(completionRecords.map((record) => record.task_id));
+  const nextStep = nextPlanStep(selectedLevel);
+  const childLabel = nextStep === "task" ? "今日やることへ追加" : nextStep ? `${goalLabels[nextStep]}へ追加` : "下位項目を追加";
+  const filterText = relatedFilter.trim().toLowerCase();
+  const filteredDreams = dreams.filter((dream) => !filterText || `${dream.title} ${dream.reason} ${dream.desired_state}`.toLowerCase().includes(filterText));
+  const selectedDream = dreams.find((dream) => dream.id === selectedDreamId);
+  const dreamOptions = [...(selectedDream ? [selectedDream] : []), ...filteredDreams].filter((dream, index, list) => list.findIndex((item) => item.id === dream.id) === index).slice(0, 10);
+  const relatedPreviewItems = [
+    ...goals
+      .filter((candidate) => candidate.id !== goal?.id)
+      .filter((candidate) => !filterText || candidate.title.toLowerCase().includes(filterText))
+      .slice(0, 4)
+      .map((candidate) => `目標: ${candidate.title}`),
+    ...tasks
+      .filter((task) => !filterText || task.title.toLowerCase().includes(filterText))
+      .slice(0, 4)
+      .map((task) => `タスク: ${task.title}`),
+    ...inbox
+      .filter((item) => item.status !== "archived")
+      .filter((item) => !filterText || `${item.title} ${item.memo}`.toLowerCase().includes(filterText))
+      .slice(0, 4)
+      .map((item) => `メモ: ${item.title}`)
+  ].slice(0, 6);
 
   return (
     <form key={goal?.id ?? `new-goal-${draft?.parent_goal_id ?? "blank"}-${draft?.level ?? "monthly"}`} onSubmit={onSubmit} className="space-y-4">
-      <Field label="関連する既存データ" hint="以前登録した長期目標データとの互換用です。新規では未選択でも使えます。">
-        <select name="dream_id" value={selectedDreamId} onChange={(event) => setSelectedDreamId(event.target.value)} className="input">
-          <option value="">未紐づけ</option>
-          {dreams.map((dream) => (
-            <option key={dream.id} value={dream.id}>
-              {dream.title}
-            </option>
-          ))}
-        </select>
+      <Field label="タイトル">
+        <input name="title" required defaultValue={goal?.title ?? draft?.title ?? ""} placeholder="例：月商100万円を達成する" className="input" />
       </Field>
-      <Field label="目標タイトル">
-        <input name="title" required defaultValue={goal?.title ?? draft?.title ?? ""} placeholder="例：事業アイデアを3つ検証する" className="input" />
+      <Field label="達成日" hint="カレンダー、手入力、日付候補から選べます。">
+        <DeadlineInput name="deadline" defaultValue={goal?.deadline ?? draft?.deadline} />
       </Field>
-      <Field label="メモ">
-        <textarea name="description" rows={3} defaultValue={goal?.description ?? draft?.description ?? ""} className="input" />
-      </Field>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="期間" hint="期限から逆算して、どの期間の目標かを選びます。">
-          <select name="level" value={selectedLevel} onChange={(event) => setSelectedLevel(event.target.value as GoalLevel)} className="input">
-            {newGoalLevels.map((level) => (
-              <option key={level} value={level}>
-                {goalLabels[level]}
-              </option>
+      <Field label="達成するためのタスク" hint={`${childLabel}します。1行に1つずつ入力できます。`}>
+        {(childGoalItems.length > 0 || childTaskItems.length > 0) && (
+          <div className="mb-3 space-y-2 rounded-lg border border-mist bg-mist/40 p-3">
+            {childGoalItems.map((child) => (
+              <div key={child.id} className="flex items-start justify-between gap-2 text-sm">
+                <span className={child.status === "done" ? "red-pen-text" : "text-ink"}>{child.title}</span>
+                <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] font-bold text-moss">{goalLabels[child.level]}</span>
+              </div>
             ))}
-            {goal && legacyGoalLevels.includes(goal.level as (typeof legacyGoalLevels)[number]) && (
-              <option value={goal.level}>{goalLabels[goal.level]}</option>
+            {childTaskItems.map((task) => {
+              const done = task.status === "done" || completionTaskIds.has(task.id);
+              return (
+                <div key={task.id} className="flex items-start justify-between gap-2 text-sm">
+                  <span className={done ? "red-pen-text" : "text-ink"}>{task.title}</span>
+                  <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] font-bold text-moss">今日</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <textarea name="child_items" rows={4} placeholder={"例：楽天市場50万円\n店舗30万円\n卸販売20万円"} className="input" />
+      </Field>
+
+      <details className="rounded-lg border border-mist bg-white/70 p-3" open={Boolean(goal?.description || goal?.parent_goal_id || selectedDreamId)}>
+        <summary className="cursor-pointer select-none text-sm font-bold text-ink">詳細設定</summary>
+        <div className="mt-4 space-y-4">
+          <Field label="期間">
+            <select name="level" value={selectedLevel} onChange={(event) => setSelectedLevel(event.target.value as GoalLevel)} className="input">
+              {newGoalLevels.map((level) => (
+                <option key={level} value={level}>
+                  {goalLabels[level]}
+                </option>
+              ))}
+              {goal && legacyGoalLevels.includes(goal.level as (typeof legacyGoalLevels)[number]) && (
+                <option value={goal.level}>{goalLabels[goal.level]}</option>
+              )}
+            </select>
+          </Field>
+          <Field label="6本の柱">
+            <PillarSelect currentCategory={goal?.category ?? draft?.category ?? undefined} />
+          </Field>
+          <Field label="上位項目" hint="未選択でも保存できます。現在より長期の項目だけ表示します。">
+            <select key={`${goal?.id ?? "new"}-${selectedDreamId}-${selectedLevel}-${draft?.parent_goal_id ?? ""}`} name="parent_goal_id" defaultValue={goal?.parent_goal_id ?? draft?.parent_goal_id ?? ""} className="input">
+              <option value="">未設定</option>
+              {parentCandidates.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {goalLabels[candidate.level]}・{candidate.title}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="関連する既存データ">
+            <input value={relatedFilter} onChange={(event) => setRelatedFilter(event.target.value)} placeholder="夢・目標・タスク・メモを検索" className="input mb-2" />
+            <select name="dream_id" value={selectedDreamId} onChange={(event) => setSelectedDreamId(event.target.value)} className="input">
+              <option value="">関連づけなし</option>
+              {dreamOptions.map((dream) => (
+                <option key={dream.id} value={dream.id}>
+                  夢・{dream.title}
+                </option>
+              ))}
+            </select>
+            {relatedPreviewItems.length > 0 && (
+              <div className="mt-2 grid gap-1 text-xs leading-5 text-ink/60">
+                {relatedPreviewItems.map((item) => (
+                  <span key={item} className="truncate rounded-md bg-mist px-2 py-1">
+                    {item}
+                  </span>
+                ))}
+              </div>
             )}
-          </select>
-        </Field>
-        <Field label="達成日" hint="この目標をいつまでに実現するかを入れます。">
-          <DeadlineInput name="deadline" defaultValue={goal?.deadline ?? draft?.deadline} />
-        </Field>
-      </div>
-      <Field label="6本の柱">
-        <PillarSelect currentCategory={goal?.category ?? draft?.category ?? undefined} />
-      </Field>
-      <Field label="つながる上位目標" hint="未選択でも保存できます。あとから5年→1年→月→週→今日につなげられます。">
-        <select key={`${goal?.id ?? "new"}-${selectedDreamId}-${selectedLevel}-${draft?.parent_goal_id ?? ""}`} name="parent_goal_id" defaultValue={goal?.parent_goal_id ?? draft?.parent_goal_id ?? ""} className="input">
-          <option value="">未設定</option>
-          {parentCandidates.map((candidate) => (
-            <option key={candidate.id} value={candidate.id}>
-              {goalLabels[candidate.level]}・{candidate.title}
-            </option>
-          ))}
-        </select>
-      </Field>
+          </Field>
+          <Field label="メモ">
+            <textarea name="description" rows={3} defaultValue={goal?.description ?? draft?.description ?? ""} className="input" />
+          </Field>
+        </div>
+      </details>
       <FormActions editing={Boolean(goal)} saveLabel={goal ? "目標を更新" : "目標を保存"} onCancel={onCancel} />
     </form>
   );
