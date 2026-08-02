@@ -2002,19 +2002,6 @@ export default function App() {
 
       {tab === "home" && (
         <section className="space-y-4">
-          <HomeGoalCarousel
-            twentyYearGoals={homeTwentyYearGoals}
-            tenYearGoals={homeTenYearGoals}
-            fiveYearGoals={homeFiveYearGoals}
-            yearGoals={homeYearGoals}
-            monthlyGoals={homeMonthlyGoals}
-            weeklyGoals={homeWeeklyGoals}
-            goals={data.goals}
-            tasks={data.tasks}
-            completionRecords={data.taskCompletionRecords}
-            dreams={data.dreams}
-            onOpenGoals={() => setTab("goals")}
-          />
           <Panel title="今日やること" icon={ListChecks}>
             <HomeTodayPanel
               suggestion={todayAiSuggestion?.output_json}
@@ -2035,6 +2022,19 @@ export default function App() {
               onReschedule={(task) => setReschedulingTaskId(task.id)}
             />
           </Panel>
+          <HomeGoalCarousel
+            twentyYearGoals={homeTwentyYearGoals}
+            tenYearGoals={homeTenYearGoals}
+            fiveYearGoals={homeFiveYearGoals}
+            yearGoals={homeYearGoals}
+            monthlyGoals={homeMonthlyGoals}
+            weeklyGoals={homeWeeklyGoals}
+            goals={data.goals}
+            tasks={data.tasks}
+            completionRecords={data.taskCompletionRecords}
+            dreams={data.dreams}
+            onOpenGoals={() => setTab("goals")}
+          />
           <TodayCompletedPanel
             records={todayCompletionRecords}
             tasks={data.tasks}
