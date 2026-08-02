@@ -258,6 +258,7 @@ function sortGoalsByPlan(a: Goal, b: Goal) {
 }
 
 const newGoalLevels = ["twenty_year", "ten_year", "five_year", "one_year", "monthly", "weekly"] as const;
+const homeGoalLevels = ["weekly", "monthly", "one_year", "five_year", "ten_year", "twenty_year"] as const;
 const legacyGoalLevels = ["three_year", "daily"] as const;
 
 const goalLabels: Record<GoalLevel, string> = {
@@ -609,6 +610,7 @@ export default function App() {
   const [editingMotivationCardId, setEditingMotivationCardId] = useState<string | null>(null);
   const [reschedulingTaskId, setReschedulingTaskId] = useState<string | null>(null);
   const [goalDraft, setGoalDraft] = useState<Partial<Goal> | null>(null);
+  const [selectedGoalLevel, setSelectedGoalLevel] = useState<GoalLevel | null>(null);
   const [taskDraft, setTaskDraft] = useState<Partial<Task> | null>(null);
   const [dreamFormVersion, setDreamFormVersion] = useState(0);
   const [goalFormVersion, setGoalFormVersion] = useState(0);
@@ -1215,6 +1217,7 @@ export default function App() {
       setGoalDraft(null);
       setGoalFormVersion((version) => version + 1);
     }
+    setSelectedGoalLevel(goal.level);
     setNotice({ type: "success", message: "保存しました。" });
   }
 
@@ -1340,6 +1343,7 @@ export default function App() {
       title: "",
       description: ""
     });
+    setSelectedGoalLevel(nextStep);
     setGoalFormVersion((version) => version + 1);
     setTab("goals");
     setNotice({ type: "success", message: `${goalLabels[goal.level]}から${goalLabels[nextStep]}へ分解します。` });
@@ -2002,6 +2006,25 @@ export default function App() {
 
       {tab === "home" && (
         <section className="space-y-4">
+          <MotivationCardStrip cards={visibleMotivationCards} startIndex={motivationCardIndex} onEdit={() => setTab("settings")} />
+          <HomeGoalCarousel
+            twentyYearGoals={homeTwentyYearGoals}
+            tenYearGoals={homeTenYearGoals}
+            fiveYearGoals={homeFiveYearGoals}
+            yearGoals={homeYearGoals}
+            monthlyGoals={homeMonthlyGoals}
+            weeklyGoals={homeWeeklyGoals}
+            goals={data.goals}
+            tasks={data.tasks}
+            completionRecords={data.taskCompletionRecords}
+            dreams={data.dreams}
+            onOpenGoals={(level) => {
+              setSelectedGoalLevel(level);
+              setEditingGoalId(null);
+              setGoalDraft({ level, status: "todo" });
+              setTab("goals");
+            }}
+          />
           <Panel title="今日やること" icon={ListChecks}>
             <HomeTodayPanel
               suggestion={todayAiSuggestion?.output_json}
@@ -2022,19 +2045,6 @@ export default function App() {
               onReschedule={(task) => setReschedulingTaskId(task.id)}
             />
           </Panel>
-          <HomeGoalCarousel
-            twentyYearGoals={homeTwentyYearGoals}
-            tenYearGoals={homeTenYearGoals}
-            fiveYearGoals={homeFiveYearGoals}
-            yearGoals={homeYearGoals}
-            monthlyGoals={homeMonthlyGoals}
-            weeklyGoals={homeWeeklyGoals}
-            goals={data.goals}
-            tasks={data.tasks}
-            completionRecords={data.taskCompletionRecords}
-            dreams={data.dreams}
-            onOpenGoals={() => setTab("goals")}
-          />
           <TodayCompletedPanel
             records={todayCompletionRecords}
             tasks={data.tasks}
@@ -2048,7 +2058,6 @@ export default function App() {
             }}
             onUpdateTime={(record, timeValue) => void updateCompletionTime(record, timeValue)}
           />
-          <MotivationCardStrip cards={visibleMotivationCards} startIndex={motivationCardIndex} onEdit={() => setTab("settings")} />
         </section>
       )}
 
@@ -2131,6 +2140,8 @@ export default function App() {
                 dreams={data.dreams}
                 tasks={data.tasks}
                 completionRecords={data.taskCompletionRecords}
+                selectedLevel={selectedGoalLevel}
+                onSelectLevel={setSelectedGoalLevel}
                 onEdit={(goal) => {
                   setGoalDraft(null);
                   setEditingGoalId(goal.id);
@@ -2294,7 +2305,14 @@ export default function App() {
                 className={`tap-highlight flex min-h-14 flex-col items-center justify-center rounded-lg text-[10px] font-semibold lg:min-h-11 lg:flex-row lg:justify-start lg:gap-3 lg:px-3 lg:text-sm ${
                   selected ? "bg-ink text-white" : "text-ink/65"
                 }`}
-                onClick={() => setTab(item.key)}
+                onClick={() => {
+                  if (item.key === "goals") {
+                    setSelectedGoalLevel(null);
+                    setGoalDraft(null);
+                    setEditingGoalId(null);
+                  }
+                  setTab(item.key);
+                }}
               >
                 <Icon className="mb-1 h-4 w-4 lg:mb-0" />
                 {item.label}
@@ -2469,7 +2487,7 @@ function MotivationCardStrip({
   onEdit: () => void;
 }) {
   if (cards.length === 0) return null;
-  const orderedCards = [...cards.slice(startIndex), ...cards.slice(0, startIndex)];
+  const orderedCards = [...cards.slice(startIndex), ...cards.slice(0, startIndex)].slice(0, 5);
   return (
     <section className="rounded-lg border border-mist bg-white/80 p-3">
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -2478,15 +2496,15 @@ function MotivationCardStrip({
           編集
         </button>
       </div>
-      <div className="flex snap-x gap-3 overflow-x-auto pb-1">
+      <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {orderedCards.map((card) => (
-          <article key={card.id} className="min-w-full snap-start rounded-lg bg-mist/60 p-3">
+          <article key={card.id} className="min-w-[86%] snap-start rounded-lg bg-mist/60 p-3 sm:min-w-[20rem]">
             <div className="flex items-start gap-3">
               {card.image_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={card.image_url} alt="" className="h-16 w-16 shrink-0 rounded-lg object-cover" />
+                <img src={card.image_url} alt="" className="h-12 w-12 shrink-0 rounded-lg object-cover" />
               ) : (
-                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-white text-clay">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-white text-clay">
                   <ImageIcon className="h-5 w-5" />
                 </div>
               )}
@@ -2723,52 +2741,57 @@ function HomeGoalCarousel({
   tasks: Task[];
   completionRecords: TaskCompletionRecord[];
   dreams: Dream[];
-  onOpenGoals: () => void;
+  onOpenGoals: (level: GoalLevel) => void;
 }) {
   const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
-  const goalById = new Map(goals.map((goal) => [goal.id, goal]));
   const cards = [
     {
-      key: "twenty-year",
-      period: "20年後",
-      icon: Flag,
-      goals: twentyYearGoals,
-      emptyText: "20年後の目標を登録"
-    },
-    {
-      key: "ten-year",
-      period: "10年後",
-      icon: Trophy,
-      goals: tenYearGoals,
-      emptyText: "10年後の目標を登録"
-    },
-    {
-      key: "five-year",
-      period: "5年後",
-      icon: CalendarDays,
-      goals: fiveYearGoals,
-      emptyText: "5年後の目標を登録"
-    },
-    {
-      key: "year",
-      period: "1年後",
-      icon: Target,
-      goals: yearGoals,
-      emptyText: "1年後の目標を登録"
+      key: "weekly",
+      period: "今週",
+      icon: ClipboardList,
+      level: "weekly" as GoalLevel,
+      goals: weeklyGoals,
+      emptyText: "今週目標を登録"
     },
     {
       key: "monthly",
       period: "今月",
       icon: CalendarDays,
+      level: "monthly" as GoalLevel,
       goals: monthlyGoals,
       emptyText: "今月目標を登録"
     },
     {
-      key: "weekly",
-      period: "今週",
-      icon: ClipboardList,
-      goals: weeklyGoals,
-      emptyText: "今週目標を登録"
+      key: "year",
+      period: "1年後",
+      icon: Target,
+      level: "one_year" as GoalLevel,
+      goals: yearGoals,
+      emptyText: "1年後の目標を登録"
+    },
+    {
+      key: "five-year",
+      period: "5年後",
+      icon: CalendarDays,
+      level: "five_year" as GoalLevel,
+      goals: fiveYearGoals,
+      emptyText: "5年後の目標を登録"
+    },
+    {
+      key: "ten-year",
+      period: "10年後",
+      icon: Trophy,
+      level: "ten_year" as GoalLevel,
+      goals: tenYearGoals,
+      emptyText: "10年後の目標を登録"
+    },
+    {
+      key: "twenty-year",
+      period: "20年後",
+      icon: Flag,
+      level: "twenty_year" as GoalLevel,
+      goals: twentyYearGoals,
+      emptyText: "20年後の目標を登録"
     }
   ];
 
@@ -2782,7 +2805,6 @@ function HomeGoalCarousel({
         {cards.map((card) => {
           const goal = card.goals[0];
           const dream = goal ? dreamById.get(goal.dream_id ?? "") : undefined;
-          const parentGoal = goal ? goalById.get(parentGoalId(goal) ?? "") : undefined;
           const Icon = card.icon;
           const progress = goal ? goalProgress(goal, goals, tasks, completionRecords) : null;
           const childItems = goal
@@ -2792,18 +2814,17 @@ function HomeGoalCarousel({
               ].slice(0, 3)
             : [];
           const total = progress?.total ?? 0;
-          const done = progress?.done ?? 0;
           return (
             <button
               key={card.key}
               type="button"
-              onClick={onOpenGoals}
-              className="tap-highlight min-w-[82%] snap-start rounded-lg border border-white/80 bg-white/90 p-3 text-left shadow-soft sm:min-w-[15rem] lg:min-w-[17rem]"
+              onClick={() => onOpenGoals(card.level)}
+              className="tap-highlight min-w-[78%] snap-start rounded-lg border border-white/80 bg-white/90 p-3 text-left shadow-soft sm:min-w-[14rem] lg:min-w-[15rem]"
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="flex min-w-0 items-center gap-2 text-xs font-bold text-clay">
-                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-mist text-moss">
-                    <Icon size={17} />
+                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-mist text-moss">
+                    <Icon size={15} />
                   </span>
                   {card.period}
                 </span>
@@ -2811,28 +2832,15 @@ function HomeGoalCarousel({
                   {goal ? dueLabel(goal.deadline) : "未設定"}
                 </span>
               </div>
-              <h2 className="mt-2 line-clamp-2 min-h-[2.5rem] text-base font-bold leading-5 text-ink">
+              <p className="mt-2 text-[11px] font-bold text-moss">目標</p>
+              <h2 className="line-clamp-1 text-sm font-bold leading-5 text-ink">
                 {goal?.title ?? card.emptyText}
               </h2>
-              <p className="mt-2 line-clamp-1 text-xs text-ink/60">
-                {goal
-                  ? parentGoal
-                    ? `上位：${goalLabels[parentGoal.level]}・${parentGoal.title}`
-                    : `既存データ：${dream?.title ?? "未紐づけ"}`
-                  : "上位：未設定"}
+              <p className="mt-1 line-clamp-1 text-[11px] text-ink/50">
+                {goal ? `関連：${dream?.title ?? "未紐づけ"}` : "タップして追加"}
               </p>
-              <div className="mt-3">
-                <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-moss">
-                  <span>進捗</span>
-                  <span>
-                    {done} / {total}
-                  </span>
-                </div>
-                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-mist">
-                  <div className="h-full rounded-full bg-leaf" style={{ width: `${total ? Math.round((done / total) * 100) : 0}%` }} />
-                </div>
-              </div>
-              <div className="mt-2 min-h-[2.75rem] space-y-1">
+              <div className="mt-2 space-y-1">
+                <p className="text-[11px] font-bold text-moss">達成するためのタスク</p>
                 {childItems.length > 0 ? (
                   childItems.map((item) => (
                     <p key={item} className="line-clamp-1 text-[11px] leading-4 text-ink/60">
@@ -3753,6 +3761,8 @@ function GoalPlanFlow({
   dreams,
   tasks,
   completionRecords,
+  selectedLevel,
+  onSelectLevel,
   onEdit,
   onArchive,
   onDelete,
@@ -3762,6 +3772,8 @@ function GoalPlanFlow({
   dreams: Dream[];
   tasks: Task[];
   completionRecords: TaskCompletionRecord[];
+  selectedLevel: GoalLevel | null;
+  onSelectLevel: (level: GoalLevel | null) => void;
   onEdit: (goal: Goal) => void;
   onArchive: (goal: Goal) => void;
   onDelete: (goal: Goal) => void;
@@ -3771,10 +3783,30 @@ function GoalPlanFlow({
   const goalById = new Map(goals.map((goal) => [goal.id, goal]));
   const activeNewGoals = goals.filter((goal) => (newGoalLevels as readonly string[]).includes(goal.level)).sort(sortGoalsByPlan);
   const legacyGoals = goals.filter((goal) => (legacyGoalLevels as readonly string[]).includes(goal.level)).sort(sortGoalsByPlan);
+  const visibleLevels = selectedLevel ? [selectedLevel] : homeGoalLevels;
 
   return (
     <div className="space-y-3">
-      {newGoalLevels.map((level) => {
+      <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <button
+          type="button"
+          className={`tap-highlight shrink-0 rounded-full px-3 py-2 text-xs font-bold ${selectedLevel ? "bg-mist text-moss" : "bg-ink text-white"}`}
+          onClick={() => onSelectLevel(null)}
+        >
+          すべて
+        </button>
+        {homeGoalLevels.map((level) => (
+          <button
+            key={level}
+            type="button"
+            className={`tap-highlight shrink-0 rounded-full px-3 py-2 text-xs font-bold ${selectedLevel === level ? "bg-ink text-white" : "bg-mist text-moss"}`}
+            onClick={() => onSelectLevel(level)}
+          >
+            {goalLabels[level]}
+          </button>
+        ))}
+      </div>
+      {visibleLevels.map((level) => {
         const goalsInLevel = activeNewGoals.filter((goal) => goal.level === level);
         return (
           <section key={level} className="rounded-lg border border-mist bg-mist/40 p-3">
@@ -3806,7 +3838,7 @@ function GoalPlanFlow({
           </section>
         );
       })}
-      {legacyGoals.length > 0 && (
+      {!selectedLevel && legacyGoals.length > 0 && (
         <section className="rounded-lg border border-dashed border-clay/40 bg-white p-3">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="font-bold text-clay">旧階層</h3>
