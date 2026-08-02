@@ -17,7 +17,7 @@ export type AiDreamSuggestionOutput = {
     title: string;
     description: string;
     target_period: string;
-    suggested_goal_level: "five_year" | "one_year" | "monthly" | "weekly" | "daily" | "ten_year" | "three_year";
+    suggested_goal_level: "twenty_year" | "ten_year" | "five_year" | "one_year" | "monthly" | "weekly" | "daily" | "three_year";
   }>;
   first_actions: Array<{
     title: string;
@@ -62,7 +62,7 @@ export const aiDreamSuggestionJsonSchema = {
           target_period: { type: "string" },
           suggested_goal_level: {
             type: "string",
-            enum: ["five_year", "one_year", "monthly", "weekly", "daily"]
+            enum: ["twenty_year", "ten_year", "five_year", "one_year", "monthly", "weekly"]
           }
         }
       }
@@ -111,9 +111,9 @@ export function buildDreamClarificationPrompt(dream: DreamClarificationInput) {
 - clarified_dream.title は、入力された夢の主語・目的・対象を必ず保つ。
 - 不足情報があっても業種、商品、金額、行き先などを勝手に断定しない。不足情報は assumptions に前提として明記する。
 - 夢に期限がある場合は、現在日付から期限までを逆算する。
-- 目標階層は「5年計画」「1年目標」「今月目標」「今週目標」「今日の行動」で考える。
-- suggested_goal_level は five_year / one_year / monthly / weekly / daily のいずれかにする。
-- 10年・3年の旧階層は新規提案では使わず、長期計画は five_year に寄せる。
+- 目標階層は「20年後」「10年後」「5年後」「1年後」「今月」「今週」で考える。
+- suggested_goal_level は twenty_year / ten_year / five_year / one_year / monthly / weekly のいずれかにする。
+- 今日の具体的行動は milestones ではなく first_actions に入れる。
 - 過去の日付を target_period に出さない。
 - 夢に期限がない場合は、1〜2か月で最初の変化が見える前提を assumptions に明記する。
 - 抽象的な夢では意味を決めつけず、「以下の前提で提案しています」と分かる前提を置く。

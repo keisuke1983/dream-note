@@ -28,6 +28,7 @@ create table if not exists public.goals (
   title text not null,
   description text,
   level text not null,
+  category text,
   deadline date,
   status text not null default 'todo',
   created_at timestamptz not null default now(),
@@ -73,7 +74,8 @@ alter table public.tasks
   add column if not exists recurrence_active boolean not null default false;
 
 alter table public.goals
-  add column if not exists parent_goal_id uuid references public.goals(id) on delete set null;
+  add column if not exists parent_goal_id uuid references public.goals(id) on delete set null,
+  add column if not exists category text;
 
 create table if not exists public.inbox_items (
   id uuid primary key default gen_random_uuid(),

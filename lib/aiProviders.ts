@@ -210,7 +210,7 @@ function normalizeSuggestion(suggestion: AiDreamSuggestionOutput): AiDreamSugges
 }
 
 function validateSuggestion(suggestion: AiDreamSuggestionOutput) {
-  const levels = ["five_year", "one_year", "monthly", "weekly", "daily", "ten_year", "three_year"];
+  const levels = ["twenty_year", "ten_year", "five_year", "one_year", "monthly", "weekly", "daily", "three_year"];
   if (!suggestion || typeof suggestion !== "object") throw new AiOutputFormatError("AIの応答形式が不正です。");
   if (!suggestion.clarified_dream) throw new AiOutputFormatError("clarified_dream が不足しています。");
   if (typeof suggestion.clarified_dream.title !== "string") throw new AiOutputFormatError("clarified_dream.title が不正です。");
@@ -244,7 +244,10 @@ function validateSuggestion(suggestion: AiDreamSuggestionOutput) {
 }
 
 function inferGoalLevel(targetPeriod: string): AiDreamSuggestionOutput["milestones"][number]["suggested_goal_level"] {
-  if (/今日|本日|daily/i.test(targetPeriod)) return "daily";
+  if (/20年|二十年|twenty/i.test(targetPeriod)) return "twenty_year";
+  if (/10年|十年|ten/i.test(targetPeriod)) return "ten_year";
+  if (/5年|五年|five/i.test(targetPeriod)) return "five_year";
+  if (/今日|本日|daily/i.test(targetPeriod)) return "weekly";
   if (/今週|来週|週間|週|weekly/i.test(targetPeriod)) return "weekly";
   if (/今月|来月|月|monthly/i.test(targetPeriod)) return "monthly";
 
@@ -253,15 +256,18 @@ function inferGoalLevel(targetPeriod: string): AiDreamSuggestionOutput["mileston
     const target = new Date(`${match[0]}T00:00:00Z`).getTime();
     const now = Date.now();
     const days = Math.ceil((target - now) / 86400000);
-    if (days <= 14) return "daily";
+    if (days <= 14) return "weekly";
     if (days <= 45) return "weekly";
     if (days <= 90) return "monthly";
     if (days <= 540) return "one_year";
-    return "five_year";
+    if (days <= 365 * 7) return "five_year";
+    if (days <= 365 * 15) return "ten_year";
+    return "twenty_year";
   }
-
-  if (/10年|十年|5年|五年|3年|三年|ten|five|three/i.test(targetPeriod)) return "five_year";
-  if (/1年|一年|年|one/i.test(targetPeriod)) return "one_year";
+  if (/1年|一年|year/i.test(targetPeriod)) return "one_year";
+  if (/10年|十年|ten/i.test(targetPeriod)) return "ten_year";
+  if (/20年|二十年|twenty/i.test(targetPeriod)) return "twenty_year";
+  if (/5年|五年|3年|三年|five|three/i.test(targetPeriod)) return "five_year";
   return "monthly";
 }
 
