@@ -3631,7 +3631,7 @@ function GoalForm({
 
   return (
     <form key={goal?.id ?? `new-goal-${draft?.parent_goal_id ?? "blank"}-${draft?.level ?? "monthly"}`} onSubmit={onSubmit} className="space-y-4">
-      <Field label="タイトル">
+      <Field label="目標">
         <input name="title" required defaultValue={goal?.title ?? draft?.title ?? ""} placeholder="例：月商100万円を達成する" className="input" />
       </Field>
       <Field label="達成日" hint="カレンダー、手入力、日付候補から選べます。">
@@ -3697,22 +3697,22 @@ function GoalForm({
           </button>
         </div>
       </Field>
+      <Field label="期間設定">
+        <select name="level" value={selectedLevel} onChange={(event) => setSelectedLevel(event.target.value as GoalLevel)} className="input">
+          {newGoalLevels.map((level) => (
+            <option key={level} value={level}>
+              {goalLabels[level]}
+            </option>
+          ))}
+          {goal && legacyGoalLevels.includes(goal.level as (typeof legacyGoalLevels)[number]) && (
+            <option value={goal.level}>{goalLabels[goal.level]}</option>
+          )}
+        </select>
+      </Field>
 
       <details className="rounded-lg border border-mist bg-white/70 p-3" open={Boolean(goal?.description || goal?.parent_goal_id || selectedDreamId)}>
         <summary className="cursor-pointer select-none text-sm font-bold text-ink">詳細設定</summary>
         <div className="mt-4 space-y-4">
-          <Field label="期間">
-            <select name="level" value={selectedLevel} onChange={(event) => setSelectedLevel(event.target.value as GoalLevel)} className="input">
-              {newGoalLevels.map((level) => (
-                <option key={level} value={level}>
-                  {goalLabels[level]}
-                </option>
-              ))}
-              {goal && legacyGoalLevels.includes(goal.level as (typeof legacyGoalLevels)[number]) && (
-                <option value={goal.level}>{goalLabels[goal.level]}</option>
-              )}
-            </select>
-          </Field>
           <Field label="6本の柱">
             <PillarSelect currentCategory={goal?.category ?? draft?.category ?? undefined} />
           </Field>
