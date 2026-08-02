@@ -1091,7 +1091,7 @@ export default function App() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const existing = editingDream;
-    const deadline = normalizeDate(form.get("deadline"));
+    const deadline = normalizeDate(form.get("deadline")) || existing?.deadline || null;
     if (deadline === "invalid") {
       setNotice({ type: "error", message: "期限は YYYY-MM-DD 形式で入力してください。" });
       return;
@@ -3634,9 +3634,7 @@ function GoalForm({
       <Field label="目標">
         <input name="title" required defaultValue={goal?.title ?? draft?.title ?? ""} placeholder="例：月商100万円を達成する" className="input" />
       </Field>
-      <Field label="達成日" hint="カレンダー、手入力、日付候補から選べます。">
-        <DeadlineInput name="deadline" defaultValue={goal?.deadline ?? draft?.deadline} />
-      </Field>
+      <input type="hidden" name="deadline" value={goal?.deadline ?? draft?.deadline ?? ""} />
       <Field label="達成するためのタスク" hint={`${childLabel}します。1行に1つずつ入力できます。`}>
         {(childGoalItems.length > 0 || childTaskItems.length > 0) && (
           <div className="mb-3 space-y-2 rounded-lg border border-mist bg-mist/40 p-3">
