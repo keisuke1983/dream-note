@@ -303,9 +303,10 @@ function nextPlanStep(level: GoalLevel): GoalLevel | "task" | null {
   return null;
 }
 
-function parseLineItems(value: FormDataEntryValue | null) {
-  return String(value ?? "")
-    .split(/\r?\n/)
+function parseLineItems(values: FormDataEntryValue | FormDataEntryValue[] | null) {
+  const rawValues = Array.isArray(values) ? values : [values ?? ""];
+  return rawValues
+    .flatMap((value) => String(value).split(/\r?\n/))
     .map((item) => item.trim().replace(/^[-・\d.\s]+/, "").trim())
     .filter(Boolean)
     .slice(0, 20);
@@ -1143,7 +1144,7 @@ export default function App() {
       created_at: existing?.created_at ?? now(),
       updated_at: now()
     };
-    const childTitles = parseLineItems(form.get("child_items"));
+    const childTitles = parseLineItems(form.getAll("child_items"));
     const nextStep = nextPlanStep(goal.level);
     const childGoals: Goal[] =
       nextStep && nextStep !== "task"
@@ -3577,11 +3578,13 @@ function GoalForm({
   const [selectedDreamId, setSelectedDreamId] = useState(initialDreamId);
   const [selectedLevel, setSelectedLevel] = useState<GoalLevel>(initialLevel);
   const [relatedFilter, setRelatedFilter] = useState("");
+  const [childInputs, setChildInputs] = useState([""]);
 
   useEffect(() => {
     setSelectedDreamId(goal?.dream_id ?? draft?.dream_id ?? "");
     setSelectedLevel(goal?.level ?? draft?.level ?? "monthly");
     setRelatedFilter("");
+    setChildInputs([""]);
   }, [goal?.id, goal?.dream_id, goal?.level, draft?.dream_id, draft?.level]);
 
   const blockedParentIds = goal ? goalDescendantIds(goal.id, goals) : new Set<string>();
@@ -3646,7 +3649,45 @@ function GoalForm({
             })}
           </div>
         )}
-        <textarea name="child_items" rows={4} placeholder={"例：楽天市場50万円\n店舗30万円\n卸販売20万円"} className="input" />
+        <div className="space-y-2">
+          {childInputs.map((value, index) => (
+            <div key={index} className="rounded-lg border border-mist bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-moss">タスク {index + 1}</span>
+                <button
+                  type="button"
+                  className="tap-highlight rounded-full p-2 text-ink/55 transition hover:bg-mist"
+                  aria-label="タスク入力を削除"
+                  onClick={() =>
+                    setChildInputs((items) => {
+                      if (items.length === 1) return [""];
+                      return items.filter((_, itemIndex) => itemIndex !== index);
+                    })
+                  }
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <input
+                name="child_items"
+                value={value}
+                onChange={(event) =>
+                  setChildInputs((items) => items.map((item, itemIndex) => (itemIndex === index ? event.target.value : item)))
+                }
+                placeholder={index === 0 ? "例：楽天市場50万円" : "例：店舗30万円"}
+                className="input"
+              />
+            </div>
+          ))}
+          <button
+            type="button"
+            className="tap-highlight flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-moss/35 bg-mist/40 px-3 py-2 text-sm font-bold text-moss"
+            onClick={() => setChildInputs((items) => [...items, ""])}
+          >
+            <Plus size={16} />
+            タスクを追加
+          </button>
+        </div>
       </Field>
 
       <details className="rounded-lg border border-mist bg-white/70 p-3" open={Boolean(goal?.description || goal?.parent_goal_id || selectedDreamId)}>
