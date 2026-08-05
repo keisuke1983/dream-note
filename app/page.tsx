@@ -90,6 +90,7 @@ type Task = {
 
 type RescheduleDestination = "tomorrow" | "this_week" | "next_week" | "this_month" | "custom" | "hold" | "drop";
 type RecurrenceType = "none" | "daily" | "weekdays" | "weekly" | "monthly";
+type RolloverMode = "tomorrow" | "this_week" | "individual" | "none";
 
 type RescheduleHistoryItem = {
   rescheduled_at: string;
@@ -224,10 +225,36 @@ type Tab = "home" | "dreams" | "goals" | "tasks" | "matrix" | "inbox" | "reflect
 type Notice = { type: "success" | "error"; message: string; actionLabel?: string; onAction?: () => void };
 type GoalLevel = "twenty_year" | "ten_year" | "five_year" | "one_year" | "monthly" | "weekly" | "daily" | "three_year";
 
-const today = () => new Date().toISOString().slice(0, 10);
 const now = () => new Date().toISOString();
 const localUserId = "local-user";
 const storageKey = "ai-dream-note-phase1";
+const journalDateKey = `${storageKey}:current-journal-date`;
+
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function systemJournalDate(date = new Date()) {
+  const local = new Date(date);
+  if (local.getHours() < 3) local.setDate(local.getDate() - 1);
+  return formatLocalDate(local);
+}
+
+function storedJournalDate() {
+  const systemDate = systemJournalDate();
+  if (typeof window === "undefined") return systemDate;
+  const stored = window.localStorage.getItem(journalDateKey);
+  if (!stored) {
+    window.localStorage.setItem(journalDateKey, systemDate);
+    return systemDate;
+  }
+  return stored;
+}
+
+const today = () => storedJournalDate();
 
 const dreamPillars = ["仕事", "家庭", "健康", "趣味", "教養", "財産"] as const;
 type DreamPillar = (typeof dreamPillars)[number];
@@ -428,9 +455,13 @@ function getStoredData() {
 }
 
 function dateDistance(date: DateValue) {
+  return dateDistanceFrom(date, today());
+}
+
+function dateDistanceFrom(date: DateValue, baseDate: string) {
   if (!date) return 9999;
   const day = new Date(`${date}T00:00:00`).getTime();
-  const base = new Date(`${today()}T00:00:00`).getTime();
+  const base = new Date(`${baseDate}T00:00:00`).getTime();
   return Math.ceil((day - base) / 86400000);
 }
 
@@ -636,6 +667,10 @@ export default function App() {
   const [aiTodayLoading, setAiTodayLoading] = useState(false);
   const [aiWeeklyLoading, setAiWeeklyLoading] = useState(false);
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null);
+  const [journalDate, setJournalDate] = useState(() => systemJournalDate());
+  const [rolloverOpen, setRolloverOpen] = useState(false);
+  const [reflectionDirty, setReflectionDirty] = useState(false);
+  const rolloverUndoRef = useRef<{ data: AppData; journalDate: string } | null>(null);
 
   const userId = user?.id ?? localUserId;
   const cloudMode = Boolean(supabase && user);
@@ -650,6 +685,7 @@ export default function App() {
 
   useEffect(() => {
     setData(getStoredData());
+    setJournalDate(storedJournalDate());
     setLoaded(true);
 
     if (!supabase) return;
@@ -659,6 +695,43 @@ export default function App() {
     } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null));
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const syncJournalDate = () => {
+      const systemDate = systemJournalDate();
+      const stored = window.localStorage.getItem(journalDateKey);
+      const before = stored ?? systemDate;
+      const next = before < systemDate ? systemDate : before;
+      if (!stored || stored < systemDate) window.localStorage.setItem(journalDateKey, next);
+      if (next !== before || next !== journalDate) {
+        setJournalDate(next);
+        const previousUnfinished = data.tasks.filter(
+          (task) =>
+            task.status !== "done" &&
+            task.status !== "archived" &&
+            !isRecurringTask(task) &&
+            task.due_date === before
+        ).length;
+        if (next > before && previousUnfinished > 0) {
+          setNotice({
+            type: "success",
+            message: `昨日の未完了が${previousUnfinished}件あります。振り返りから整理できます。`
+          });
+        }
+      }
+    };
+    syncJournalDate();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") syncJournalDate();
+    };
+    const timer = window.setInterval(syncJournalDate, 60000);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [loaded, journalDate, data.tasks]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -803,8 +876,8 @@ export default function App() {
   );
 
   const todayCompletionRecords = useMemo(
-    () => data.taskCompletionRecords.filter((record) => record.completion_date === today()).sort((a, b) => b.completed_at.localeCompare(a.completed_at)),
-    [data.taskCompletionRecords]
+    () => data.taskCompletionRecords.filter((record) => record.completion_date === journalDate).sort((a, b) => b.completed_at.localeCompare(a.completed_at)),
+    [data.taskCompletionRecords, journalDate]
   );
 
   const recentlyActedDreamIds = useMemo(() => {
@@ -827,7 +900,7 @@ export default function App() {
     const goalMap = new Map(data.goals.map((goal) => [goal.id, goal]));
     const dreamIdFor = (task: Task) => task.dream_id ?? goalMap.get(task.goal_id ?? "")?.dream_id ?? null;
     const score = (task: Task) => {
-      const distance = dateDistance(task.due_date);
+      const distance = dateDistanceFrom(task.due_date, journalDate);
       const linkedDreamId = dreamIdFor(task);
       return (
         (task.urgent && task.important ? 120 : 0) +
@@ -841,13 +914,18 @@ export default function App() {
     };
     return [...activeTasks]
       .filter((task) => {
-        if (isRecurringTask(task)) return isRecurringTaskDueOn(task, today()) && !isTaskCompletedOn(task.id, today(), data.taskCompletionRecords);
-        const distance = dateDistance(task.due_date);
+        if (isRecurringTask(task)) return isRecurringTaskDueOn(task, journalDate) && !isTaskCompletedOn(task.id, journalDate, data.taskCompletionRecords);
+        const distance = dateDistanceFrom(task.due_date, journalDate);
         const linkedDreamId = dreamIdFor(task);
         return task.urgent || task.important || distance <= 3 || Boolean(linkedDreamId && !recentlyActedDreamIds.has(linkedDreamId));
       })
       .sort((a, b) => score(b) - score(a));
-  }, [activeTasks, data.goals, data.taskCompletionRecords, recentlyActedDreamIds]);
+  }, [activeTasks, data.goals, data.taskCompletionRecords, recentlyActedDreamIds, journalDate]);
+
+  const rolloverIncompleteTasks = useMemo(
+    () => todayTasks.filter((task) => task.status !== "done" && task.status !== "archived" && !isRecurringTask(task)),
+    [todayTasks]
+  );
 
   const todayAiInput = useMemo<TodayAiSuggestionInput>(() => {
     const goalMap = new Map(data.goals.map((goal) => [goal.id, goal]));
@@ -856,7 +934,7 @@ export default function App() {
     const mostRecentReflection = [...data.reflections].sort((a, b) => b.reflection_date.localeCompare(a.reflection_date))[0];
 
     return {
-      date: today(),
+      date: journalDate,
       tasks: todayTasks.slice(0, 12).map((task) => {
         const goal = goalMap.get(task.goal_id ?? "");
         const dreamId = taskDreamId(task);
@@ -871,7 +949,7 @@ export default function App() {
           dream_title: dream?.title ?? null,
           goal_title: goal?.title ?? null,
           matrix_label: matrixLabel(task),
-          days_until_due: task.due_date ? dateDistance(task.due_date) : null,
+          days_until_due: task.due_date ? dateDistanceFrom(task.due_date, journalDate) : null,
           dream_recently_acted: Boolean(dreamId && recentlyActedDreamIds.has(dreamId))
         };
       }),
@@ -894,7 +972,7 @@ export default function App() {
           }
         : null
     };
-  }, [data.dreams, data.goals, data.reflections, recentlyActedDreamIds, todayTasks]);
+  }, [data.dreams, data.goals, data.reflections, recentlyActedDreamIds, todayTasks, journalDate]);
 
   const todayAiContextHash = useMemo(() => simpleHash(JSON.stringify(todayAiInput)), [todayAiInput]);
   const todayAiSuggestion = useMemo(
@@ -903,11 +981,11 @@ export default function App() {
         .filter(
           (suggestion) =>
             suggestion.status === "active" &&
-            suggestion.suggestion_date === today() &&
+            suggestion.suggestion_date === journalDate &&
             suggestion.context_hash === todayAiContextHash
         )
         .sort((a, b) => b.created_at.localeCompare(a.created_at))[0],
-    [data.todayAiSuggestions, todayAiContextHash]
+    [data.todayAiSuggestions, todayAiContextHash, journalDate]
   );
 
   const homeMonthlyGoals = useMemo(
@@ -973,16 +1051,16 @@ export default function App() {
     const key = "ai-dream-note-motivation-card";
     try {
       const saved = JSON.parse(window.localStorage.getItem(key) ?? "{}") as { date?: string; index?: number };
-      if (saved.date === today() && typeof saved.index === "number") return saved.index % visibleMotivationCards.length;
+      if (saved.date === journalDate && typeof saved.index === "number") return saved.index % visibleMotivationCards.length;
       const nextIndex = ((saved.index ?? -1) + 1) % visibleMotivationCards.length;
-      window.localStorage.setItem(key, JSON.stringify({ date: today(), index: nextIndex }));
+      window.localStorage.setItem(key, JSON.stringify({ date: journalDate, index: nextIndex }));
       return nextIndex;
     } catch {
       return 0;
     }
-  }, [visibleMotivationCards]);
+  }, [visibleMotivationCards, journalDate]);
 
-  const currentWeek = useMemo(() => weekBounds(), []);
+  const currentWeek = useMemo(() => weekBounds(journalDate), [journalDate]);
   const weeklyReviewInput = useMemo<WeeklyReviewInput>(() => {
     const goalMap = new Map(data.goals.map((goal) => [goal.id, goal]));
     const dreamMap = new Map(data.dreams.map((dream) => [dream.id, dream]));
@@ -1868,6 +1946,98 @@ export default function App() {
     setNotice({ type: "success", message: destination === "drop" ? "もうやらないにしました。" : "転記しました。" });
   }
 
+  async function switchToNextJournalDay(mode: RolloverMode, individualSelections: Record<string, RolloverMode> = {}) {
+    const currentDate = today();
+    const nextDate = addDays(currentDate, 1);
+    const previousData = data;
+    const tasksToUpdate = rolloverIncompleteTasks
+      .map((task) => {
+        const taskMode = mode === "individual" ? individualSelections[task.id] ?? "none" : mode;
+        if (taskMode === "none" || taskMode === "individual") return null;
+        const nextDueDate = taskMode === "tomorrow" ? nextDate : weekBounds(currentDate).weekEnd;
+        const historyItem: RescheduleHistoryItem = {
+          rescheduled_at: now(),
+          from_due_date: task.due_date,
+          to_due_date: nextDueDate,
+          destination: taskMode === "tomorrow" ? "tomorrow" : "this_week"
+        };
+        return {
+          ...task,
+          due_date: nextDueDate,
+          status: "todo" as const,
+          reschedule_count: taskRescheduleCount(task) + 1,
+          last_rescheduled_at: historyItem.rescheduled_at,
+          rescheduled_from: task.due_date,
+          rescheduled_to: nextDueDate,
+          reschedule_history: [...(task.reschedule_history ?? []), historyItem],
+          updated_at: now()
+        };
+      })
+      .filter(Boolean) as Task[];
+
+    const nextData: AppData = {
+      ...data,
+      tasks: data.tasks.map((task) => tasksToUpdate.find((updated) => updated.id === task.id) ?? task)
+    };
+
+    if (cloudMode) {
+      for (const task of tasksToUpdate) {
+        const saved = await persist("tasks", task);
+        if (!saved) return;
+      }
+    } else if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(nextData));
+      } catch {
+        setNotice({ type: "error", message: "ローカル保存に失敗しました。翌日へ切り替えていません。" });
+        return;
+      }
+    }
+
+    rolloverUndoRef.current = { data: previousData, journalDate: currentDate };
+    if (typeof window !== "undefined") window.localStorage.setItem(journalDateKey, nextDate);
+    setData(nextData);
+    setJournalDate(nextDate);
+    setRolloverOpen(false);
+    setReflectionDirty(false);
+    setNotice({
+      type: "success",
+      message: "翌日に切り替えました",
+      actionLabel: "元に戻す",
+      onAction: () => void undoJournalRollover()
+    });
+  }
+
+  async function undoJournalRollover() {
+    const snapshot = rolloverUndoRef.current;
+    if (!snapshot) return;
+    const ok = window.confirm("翌日切り替え後の編集も、切り替え前の状態へ戻ります。元に戻しますか？");
+    if (!ok) return;
+
+    if (cloudMode) {
+      for (const task of snapshot.data.tasks) {
+        const currentTask = data.tasks.find((item) => item.id === task.id);
+        if (currentTask && JSON.stringify(currentTask) !== JSON.stringify(task)) {
+          const saved = await persist("tasks", task);
+          if (!saved) return;
+        }
+      }
+    } else if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(snapshot.data));
+      } catch {
+        setNotice({ type: "error", message: "ローカル保存に失敗しました。元に戻せませんでした。" });
+        return;
+      }
+    }
+
+    if (typeof window !== "undefined") window.localStorage.setItem(journalDateKey, snapshot.journalDate);
+    setData(snapshot.data);
+    setJournalDate(snapshot.journalDate);
+    rolloverUndoRef.current = null;
+    setNotice({ type: "success", message: "元に戻しました" });
+  }
+
   async function archiveInboxItem(item: InboxItem) {
     const updated: InboxItem = { ...item, status: "archived", updated_at: now() };
     upsertLocal("inbox", updated);
@@ -1991,6 +2161,7 @@ export default function App() {
     }
     upsertLocal("reflections", reflection);
     tomorrowTasks.forEach((task) => upsertLocal("tasks", task));
+    setReflectionDirty(false);
     setNotice({ type: "success", message: "保存しました" });
   }
 
@@ -2292,7 +2463,17 @@ export default function App() {
             />
           </Panel>
           <Panel title="今日の振り返り" icon={Moon}>
-            <ReflectionForm reflection={todayReflection} records={todayCompletionRecords} onSubmit={saveReflection} />
+            <ReflectionForm
+              reflection={todayReflection}
+              records={todayCompletionRecords}
+              incompleteCount={rolloverIncompleteTasks.length}
+              onSubmit={saveReflection}
+              onDirty={() => setReflectionDirty(true)}
+              onRolloverRequest={() => {
+                if (reflectionDirty && !window.confirm("未保存の振り返りがあります。保存せずに翌日切り替えへ進みますか？")) return;
+                setRolloverOpen(true);
+              }}
+            />
           </Panel>
         </section>
       )}
@@ -2358,6 +2539,16 @@ export default function App() {
           task={reschedulingTask}
           onClose={() => setReschedulingTaskId(null)}
           onReschedule={(destination, customDate) => void rescheduleTask(reschedulingTask, destination, customDate)}
+        />
+      )}
+
+      {rolloverOpen && (
+        <JournalRolloverDialog
+          currentDate={today()}
+          nextDate={addDays(today(), 1)}
+          tasks={rolloverIncompleteTasks}
+          onClose={() => setRolloverOpen(false)}
+          onSwitch={(mode, selections) => void switchToNextJournalDay(mode, selections)}
         />
       )}
 
@@ -4236,6 +4427,102 @@ function RescheduleDialog({
   );
 }
 
+function JournalRolloverDialog({
+  currentDate,
+  nextDate,
+  tasks,
+  onClose,
+  onSwitch
+}: {
+  currentDate: string;
+  nextDate: string;
+  tasks: Task[];
+  onClose: () => void;
+  onSwitch: (mode: RolloverMode, selections?: Record<string, RolloverMode>) => void;
+}) {
+  const [mode, setMode] = useState<RolloverMode>("tomorrow");
+  const [selections, setSelections] = useState<Record<string, RolloverMode>>(() =>
+    Object.fromEntries(tasks.map((task) => [task.id, "tomorrow" as RolloverMode]))
+  );
+  const options: Array<{ key: RolloverMode; label: string; description: string }> = [
+    { key: "tomorrow", label: "明日へ転記する", description: `${nextDate} の今日やることへ送ります` },
+    { key: "this_week", label: "今週に残す", description: "今週中の未完了行動として残します" },
+    { key: "individual", label: "個別に選ぶ", description: "タスクごとに扱いを決めます" },
+    { key: "none", label: "変更せず切り替える", description: "未完了タスクはそのまま残します" }
+  ];
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-end bg-ink/35 px-3 pb-3 pt-12 sm:items-center sm:justify-center" role="dialog" aria-modal="true">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-4 shadow-soft">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold text-clay">手帳日の切り替え</p>
+            <h2 className="mt-1 text-lg font-bold text-ink">{nextDate}へ切り替えます</h2>
+            <p className="mt-1 text-sm leading-6 text-ink/65">
+              {currentDate} → {nextDate} / 未完了の今日やること: {tasks.length}件
+            </p>
+          </div>
+          <button className="mini-button shrink-0" onClick={onClose} aria-label="閉じる">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {options.map((option) => (
+            <label key={option.key} className="toggle items-start">
+              <input type="radio" checked={mode === option.key} onChange={() => setMode(option.key)} />
+              <span>
+                <span className="block">{option.label}</span>
+                <span className="block text-xs font-semibold leading-5 text-ink/50">{option.description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+
+        {mode === "individual" && (
+          <div className="mt-4 space-y-3 rounded-xl bg-mist/50 p-3">
+            <p className="text-sm font-bold text-ink">個別に整理</p>
+            {tasks.length > 0 ? (
+              tasks.map((task) => (
+                <div key={task.id} className="rounded-xl bg-white p-3">
+                  <p className="break-words text-sm font-bold text-ink">{task.title}</p>
+                  <div className="mt-2 grid grid-cols-3 gap-2 text-xs font-bold">
+                    {[
+                      ["tomorrow", "明日"],
+                      ["this_week", "今週"],
+                      ["none", "そのまま"]
+                    ].map(([value, label]) => (
+                      <label key={value} className="flex items-center justify-center gap-1 rounded-lg border border-mist px-2 py-2">
+                        <input
+                          type="radio"
+                          checked={(selections[task.id] ?? "tomorrow") === value}
+                          onChange={() => setSelections((current) => ({ ...current, [task.id]: value as RolloverMode }))}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-ink/55">未完了タスクはありません。</p>
+            )}
+          </div>
+        )}
+
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+          <button className="primary-button" onClick={() => onSwitch(mode, mode === "individual" ? selections : undefined)}>
+            翌日に切り替える
+          </button>
+          <button className="secondary-button" onClick={onClose}>
+            キャンセル
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TaskCard({
   task,
   dream,
@@ -4441,15 +4728,21 @@ function InboxList({
 function ReflectionForm({
   reflection,
   records,
-  onSubmit
+  incompleteCount,
+  onSubmit,
+  onDirty,
+  onRolloverRequest
 }: {
   reflection?: Reflection;
   records: TaskCompletionRecord[];
+  incompleteCount: number;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onDirty: () => void;
+  onRolloverRequest: () => void;
 }) {
   const doneText = records.map((record) => record.title_snapshot).join("\n");
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
+    <form onSubmit={onSubmit} onChange={onDirty} className="space-y-4">
       <div className="rounded-xl border border-mist bg-mist/50 p-3">
         <div className="mb-2 flex items-center justify-between gap-2">
           <p className="text-sm font-bold text-ink">今日やり遂げたこと</p>
@@ -4475,6 +4768,16 @@ function ReflectionForm({
       <button type="submit" className="primary-button">
         振り返りを保存
       </button>
+      <div className="rounded-xl border border-mist bg-paper p-3">
+        <p className="text-xs font-bold text-moss">夜の締め</p>
+        <p className="mt-1 text-sm leading-6 text-ink/70">
+          振り返りを保存したら、未完了の今日やることを整理して翌日の手帳へ移ります。
+        </p>
+        <p className="mt-2 text-xs font-bold text-ink/55">未完了の今日やること: {incompleteCount}件</p>
+        <button type="button" className="secondary-button mt-3" onClick={onRolloverRequest}>
+          翌日に切り替える
+        </button>
+      </div>
     </form>
   );
 }
