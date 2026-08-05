@@ -51,12 +51,13 @@ textarea:focus-visible {
   position: absolute;
   left: -0.05em;
   right: -0.05em;
-  top: 54%;
-  height: 0.16em;
+  top: 55%;
+  height: 0.18em;
   border-radius: 999px;
   background: rgba(196, 63, 63, 0.85);
   transform: scaleX(0);
   transform-origin: left center;
+  rotate: -1deg;
   animation: red-pen-cross 0.35s ease-out forwards;
 }
 
@@ -75,23 +76,23 @@ textarea:focus-visible {
 
 @layer components {
   .input {
-    @apply w-full rounded-lg border border-mist bg-white px-3 py-3 text-base text-ink shadow-sm transition placeholder:text-ink/35 focus:border-clay;
+    @apply w-full rounded-xl border border-mist bg-white px-3 py-3 text-base text-ink shadow-sm transition placeholder:text-ink/35 focus:border-clay;
   }
 
   .primary-button {
-    @apply tap-highlight flex min-h-12 w-full items-center justify-center rounded-lg bg-ink px-4 py-3 text-center font-bold text-white shadow-soft transition active:scale-[0.99];
+    @apply tap-highlight flex min-h-12 w-full items-center justify-center rounded-xl bg-ink px-4 py-3 text-center font-bold text-white shadow-soft transition active:scale-[0.99];
   }
 
   .secondary-button {
-    @apply tap-highlight flex min-h-12 w-full items-center justify-center rounded-lg border border-ink/15 bg-white px-4 py-3 text-center font-bold text-ink transition active:scale-[0.99];
+    @apply tap-highlight flex min-h-12 w-full items-center justify-center rounded-xl border border-ink/15 bg-white px-4 py-3 text-center font-bold text-ink transition active:scale-[0.99];
   }
 
   .mini-button {
-    @apply tap-highlight min-h-11 flex-1 rounded-lg bg-mist px-3 py-2 text-xs font-bold text-moss transition active:scale-[0.99];
+    @apply tap-highlight min-h-11 flex-1 rounded-xl bg-mist px-3 py-2 text-xs font-bold text-moss transition active:scale-[0.99];
   }
 
   .toggle {
-    @apply tap-highlight flex min-h-12 items-center gap-3 rounded-lg border border-mist bg-white px-3 py-3 text-sm font-bold text-ink;
+    @apply tap-highlight flex min-h-12 items-center gap-3 rounded-xl border border-mist bg-white px-3 py-3 text-sm font-bold text-ink;
   }
 
   .toggle input {

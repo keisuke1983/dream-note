@@ -313,6 +313,15 @@ function parseLineItems(values: FormDataEntryValue | FormDataEntryValue[] | null
     .slice(0, 20);
 }
 
+function readImageFile(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
 const inboxKindLabels: Record<InboxItem["kind"], string> = {
   someday: "いつか",
   idea: "アイデア",
@@ -435,10 +444,16 @@ function dueLabel(date: DateValue) {
 }
 
 function matrixLabel(task: Task) {
-  if (task.urgent && task.important) return "緊急かつ重要";
-  if (!task.urgent && task.important) return "緊急ではないが重要";
-  if (task.urgent && !task.important) return "緊急だが重要ではない";
-  return "緊急でも重要でもない";
+  if (task.urgent && task.important) return "第Ⅰ領域 重要・緊急";
+  if (!task.urgent && task.important) return "第Ⅱ領域 重要・緊急でない";
+  if (task.urgent && !task.important) return "第Ⅲ領域 緊急・重要でない";
+  return "第Ⅳ領域 重要でも緊急でもない";
+}
+
+function matrixBadgeClass(task: Task) {
+  if (!task.urgent && task.important) return "bg-leaf/20 text-moss ring-1 ring-leaf/25";
+  if (task.urgent && task.important) return "bg-dawn/25 text-clay";
+  return "bg-mist text-moss";
 }
 
 function simpleHash(text: string) {
@@ -653,6 +668,12 @@ export default function App() {
       setNotice({ type: "error", message: "ローカル保存に失敗しました。ブラウザの空き容量や権限を確認してください。" });
     }
   }, [data, loaded]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 2800);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     if (!supabase || !user) return;
@@ -1091,7 +1112,7 @@ export default function App() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const existing = editingDream;
-    const deadline = normalizeDate(form.get("deadline")) || existing?.deadline || null;
+    const deadline = normalizeDate(form.get("deadline"));
     if (deadline === "invalid") {
       setNotice({ type: "error", message: "期限は YYYY-MM-DD 形式で入力してください。" });
       return;
@@ -1114,7 +1135,7 @@ export default function App() {
     upsertLocal("dreams", dream);
     setEditingDreamId(null);
     if (!existing) setDreamFormVersion((version) => version + 1);
-    setNotice({ type: "success", message: existing ? "夢を更新しました。" : "夢を保存しました。" });
+    setNotice({ type: "success", message: "保存しました" });
     setTab("dreams");
   }
 
@@ -1218,7 +1239,7 @@ export default function App() {
       setGoalFormVersion((version) => version + 1);
     }
     setSelectedGoalLevel(goal.level);
-    setNotice({ type: "success", message: "保存しました。" });
+    setNotice({ type: "success", message: "保存しました" });
   }
 
   async function saveTask(event: FormEvent<HTMLFormElement>) {
@@ -1280,7 +1301,7 @@ export default function App() {
       setTaskDraft(null);
       setTaskFormVersion((version) => version + 1);
     }
-    setNotice({ type: "success", message: existing ? "タスクを更新しました。" : "タスクを保存しました。" });
+    setNotice({ type: "success", message: "保存しました" });
     setTab("tasks");
   }
 
@@ -1303,7 +1324,7 @@ export default function App() {
     upsertLocal("inbox", item);
     setEditingInboxId(null);
     if (!existing) setInboxFormVersion((version) => version + 1);
-    setNotice({ type: "success", message: existing ? "メモを更新しました。" : "メモを保存しました。" });
+    setNotice({ type: "success", message: "保存しました" });
   }
 
   function startDecomposeGoal(goal: Goal) {
@@ -1918,23 +1939,59 @@ export default function App() {
   async function saveReflection(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const previousTomorrowTasks = new Set(parseLineItems(todayReflection?.tomorrow_text ?? ""));
+    const tomorrowTaskTitles = parseLineItems(form.getAll("tomorrow_tasks"));
+    const newTomorrowTaskTitles = tomorrowTaskTitles.filter((title) => !previousTomorrowTasks.has(title));
     const reflection: Reflection = {
       id: todayReflection?.id ?? crypto.randomUUID(),
       user_id: userId,
       reflection_date: today(),
       done_text: String(form.get("done_text") ?? ""),
-      not_done_text: String(form.get("not_done_text") ?? ""),
-      dream_progress_text: String(form.get("dream_progress_text") ?? ""),
-      tomorrow_text: String(form.get("tomorrow_text") ?? ""),
+      not_done_text: "",
+      dream_progress_text: "",
+      tomorrow_text: tomorrowTaskTitles.join("\n"),
       insight_text: String(form.get("insight_text") ?? ""),
-      satisfaction_score: Number(form.get("satisfaction_score") ?? 3),
+      satisfaction_score: todayReflection?.satisfaction_score ?? 3,
       created_at: todayReflection?.created_at ?? now(),
       updated_at: now()
     };
+    const tomorrowTasks: Task[] = newTomorrowTaskTitles.map((title) => ({
+      id: crypto.randomUUID(),
+      user_id: userId,
+      dream_id: null,
+      goal_id: null,
+      title,
+      memo: "振り返りから追加",
+      due_date: addDays(today(), 1),
+      urgent: false,
+      important: true,
+      status: "todo",
+      completed_at: null,
+      reschedule_count: 0,
+      last_rescheduled_at: null,
+      rescheduled_from: null,
+      rescheduled_to: null,
+      reschedule_history: [],
+      recurrence_type: "none",
+      recurrence_weekdays: [],
+      recurrence_day_of_month: null,
+      recurrence_start_date: null,
+      recurrence_active: false,
+      created_at: now(),
+      updated_at: now()
+    }));
     const saved = await persist("daily_reflections", reflection);
     if (!saved) return;
+    for (const task of tomorrowTasks) {
+      const taskSaved = await persist("tasks", task);
+      if (!taskSaved) {
+        setNotice({ type: "error", message: "振り返りは保存しましたが、明日のタスク保存に失敗しました。" });
+        return;
+      }
+    }
     upsertLocal("reflections", reflection);
-    setNotice({ type: "success", message: "今日の振り返りを保存しました。" });
+    tomorrowTasks.forEach((task) => upsertLocal("tasks", task));
+    setNotice({ type: "success", message: "保存しました" });
   }
 
   async function saveMotivationCard(event: FormEvent<HTMLFormElement>) {
@@ -1945,13 +2002,22 @@ export default function App() {
       setNotice({ type: "error", message: "モチベーションカードは最大5枚までです。" });
       return;
     }
+    const imageFile = form.get("image_file");
+    let imageUrl = form.get("remove_image") === "on" ? "" : String(form.get("image_url") ?? existing?.image_url ?? "");
+    if (imageFile instanceof File && imageFile.size > 0) {
+      if (imageFile.size > 900_000) {
+        setNotice({ type: "error", message: "画像は900KB以下を選択してください。" });
+        return;
+      }
+      imageUrl = await readImageFile(imageFile);
+    }
     const card: MotivationCard = {
       id: existing?.id ?? crypto.randomUUID(),
       user_id: userId,
       title: String(form.get("title") ?? ""),
       body: String(form.get("body") ?? ""),
       kind: String(form.get("kind") ?? "reason") as MotivationCard["kind"],
-      image_url: String(form.get("image_url") ?? ""),
+      image_url: imageUrl,
       sort_order: Number(form.get("sort_order") ?? existing?.sort_order ?? data.motivationCards.length + 1),
       visible: form.get("visible") === "on",
       created_at: existing?.created_at ?? now(),
@@ -1962,7 +2028,7 @@ export default function App() {
     upsertLocal("motivationCards", card);
     setEditingMotivationCardId(null);
     if (!existing) setMotivationCardFormVersion((version) => version + 1);
-    setNotice({ type: "success", message: "保存しました。" });
+    setNotice({ type: "success", message: "保存しました" });
   }
 
   async function toggleMotivationCard(card: MotivationCard) {
@@ -1970,7 +2036,7 @@ export default function App() {
     const saved = await persist("motivation_cards", updated);
     if (!saved) return;
     upsertLocal("motivationCards", updated);
-    setNotice({ type: "success", message: "保存しました。" });
+    setNotice({ type: "success", message: "保存しました" });
   }
 
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
@@ -1982,9 +2048,10 @@ export default function App() {
       display_name: String(form.get("display_name") ?? ""),
       updated_at: now()
     };
+    const saved = await persist("profiles", profile);
+    if (!saved) return;
     setData((current) => ({ ...current, profile }));
-    await persist("profiles", profile);
-    setNotice({ type: "success", message: "設定を保存しました。" });
+    setNotice({ type: "success", message: "保存しました" });
   }
 
   return (
@@ -2007,24 +2074,6 @@ export default function App() {
       {tab === "home" && (
         <section className="space-y-4">
           <MotivationCardStrip cards={visibleMotivationCards} startIndex={motivationCardIndex} onEdit={() => setTab("settings")} />
-          <HomeGoalCarousel
-            twentyYearGoals={homeTwentyYearGoals}
-            tenYearGoals={homeTenYearGoals}
-            fiveYearGoals={homeFiveYearGoals}
-            yearGoals={homeYearGoals}
-            monthlyGoals={homeMonthlyGoals}
-            weeklyGoals={homeWeeklyGoals}
-            goals={data.goals}
-            tasks={data.tasks}
-            completionRecords={data.taskCompletionRecords}
-            dreams={data.dreams}
-            onOpenGoals={(level) => {
-              setSelectedGoalLevel(level);
-              setEditingGoalId(null);
-              setGoalDraft({ level, status: "todo" });
-              setTab("goals");
-            }}
-          />
           <Panel title="今日やること" icon={ListChecks}>
             <HomeTodayPanel
               suggestion={todayAiSuggestion?.output_json}
@@ -2045,6 +2094,24 @@ export default function App() {
               onReschedule={(task) => setReschedulingTaskId(task.id)}
             />
           </Panel>
+          <HomeGoalCarousel
+            twentyYearGoals={homeTwentyYearGoals}
+            tenYearGoals={homeTenYearGoals}
+            fiveYearGoals={homeFiveYearGoals}
+            yearGoals={homeYearGoals}
+            monthlyGoals={homeMonthlyGoals}
+            weeklyGoals={homeWeeklyGoals}
+            goals={data.goals}
+            tasks={data.tasks}
+            completionRecords={data.taskCompletionRecords}
+            dreams={data.dreams}
+            onOpenGoals={(level) => {
+              setSelectedGoalLevel(level);
+              setEditingGoalId(null);
+              setGoalDraft({ level, status: "todo" });
+              setTab("goals");
+            }}
+          />
           <TodayCompletedPanel
             records={todayCompletionRecords}
             tasks={data.tasks}
@@ -2225,7 +2292,7 @@ export default function App() {
             />
           </Panel>
           <Panel title="今日の振り返り" icon={Moon}>
-            <ReflectionForm reflection={todayReflection} onSubmit={saveReflection} />
+            <ReflectionForm reflection={todayReflection} records={todayCompletionRecords} onSubmit={saveReflection} />
           </Panel>
         </section>
       )}
@@ -2355,9 +2422,9 @@ function NoticeBar({ notice, onClose }: { notice: Notice; onClose: () => void })
 
 function Panel({ title, icon: Icon, children }: { title: string; icon: LucideIcon; children: React.ReactNode }) {
   return (
-    <section className="rounded-lg border border-white/80 bg-white/88 p-4 shadow-soft">
+    <section className="rounded-2xl border border-white/80 bg-white/88 p-4 shadow-soft">
       <div className="mb-4 flex items-center gap-2">
-        <span className="rounded-lg bg-mist p-2 text-moss">
+        <span className="rounded-xl bg-mist p-2 text-moss">
           <Icon className="h-4 w-4" />
         </span>
         <h2 className="text-lg font-bold text-ink">{title}</h2>
@@ -2536,6 +2603,14 @@ function MotivationCardManager({
   onCancel: () => void;
   onToggle: (card: MotivationCard) => void;
 }) {
+  const [imageValue, setImageValue] = useState(editingCard?.image_url ?? "");
+  const [removeImage, setRemoveImage] = useState(false);
+
+  useEffect(() => {
+    setImageValue(editingCard?.image_url ?? "");
+    setRemoveImage(false);
+  }, [editingCard?.id, editingCard?.image_url]);
+
   return (
     <div className="space-y-4">
       <form onSubmit={onSubmit} className="space-y-3">
@@ -2559,8 +2634,39 @@ function MotivationCardManager({
             <input name="sort_order" type="number" min={1} defaultValue={editingCard?.sort_order ?? cards.length + 1} className="input" />
           </Field>
         </div>
-        <Field label="画像URL">
-          <input name="image_url" type="url" defaultValue={editingCard?.image_url} className="input" />
+        <Field label="画像を登録">
+          <input type="hidden" name="image_url" value={imageValue} />
+          <input type="hidden" name="remove_image" value={removeImage ? "on" : ""} />
+          <input
+            name="image_file"
+            type="file"
+            accept="image/*"
+            className="input"
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              if (!file) return;
+              if (file.size > 900_000) {
+                setImageValue("");
+                setRemoveImage(false);
+                return;
+              }
+              const reader = new FileReader();
+              reader.onload = () => {
+                setImageValue(String(reader.result ?? ""));
+                setRemoveImage(false);
+              };
+              reader.readAsDataURL(file);
+            }}
+          />
+          {imageValue && !removeImage && (
+            <div className="mt-3 flex items-center gap-3 rounded-xl bg-mist/60 p-3">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={imageValue} alt="" className="h-14 w-14 rounded-xl object-cover" />
+              <button type="button" className="mini-button flex-none" onClick={() => setRemoveImage(true)}>
+                <X className="h-3.5 w-3.5" /> 画像を削除
+              </button>
+            </div>
+          )}
         </Field>
         <label className="toggle">
           <input name="visible" type="checkbox" defaultChecked={editingCard?.visible ?? true} />
@@ -2666,7 +2772,7 @@ function HomeTodayPanel({
           </button>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap gap-2">
-              <span className="rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">{matrixLabel(task)}</span>
+              <span className={`rounded-full px-2 py-1 text-xs font-bold ${matrixBadgeClass(task)}`}>{matrixLabel(task)}</span>
               <span className={`rounded-full px-2 py-1 text-xs font-bold ${dateDistance(task.due_date) <= 3 ? "bg-dawn/20 text-clay" : "bg-mist text-moss"}`}>
                 {dueLabel(task.due_date)}
               </span>
@@ -3634,7 +3740,6 @@ function GoalForm({
       <Field label="目標">
         <input name="title" required defaultValue={goal?.title ?? draft?.title ?? ""} placeholder="例：月商100万円を達成する" className="input" />
       </Field>
-      <input type="hidden" name="deadline" value={goal?.deadline ?? draft?.deadline ?? ""} />
       <Field label="達成するためのタスク" hint={`${childLabel}します。1行に1つずつ入力できます。`}>
         {(childGoalItems.length > 0 || childTaskItems.length > 0) && (
           <div className="mb-3 space-y-2 rounded-lg border border-mist bg-mist/40 p-3">
@@ -3706,6 +3811,9 @@ function GoalForm({
             <option value={goal.level}>{goalLabels[goal.level]}</option>
           )}
         </select>
+      </Field>
+      <Field label="達成日" hint="カレンダーでも手入力でも設定できます。">
+        <DeadlineInput name="deadline" defaultValue={goal?.deadline ?? draft?.deadline} />
       </Field>
 
       <details className="rounded-lg border border-mist bg-white/70 p-3" open={Boolean(goal?.description || goal?.parent_goal_id || selectedDreamId)}>
@@ -4025,6 +4133,7 @@ function TaskForm({
           <span>重要</span>
         </label>
       </div>
+      <p className="rounded-xl bg-leaf/10 px-3 py-2 text-xs font-bold leading-5 text-moss">第Ⅱ領域は「重要・緊急でない」行動です。未来の夢につながる行動はここに入れます。</p>
       <Field label="関連する既存データ">
         <select name="dream_id" className="input" value={selectedDreamId} onChange={(event) => setSelectedDreamId(event.target.value)}>
           <option value="">未紐づけ</option>
@@ -4156,7 +4265,7 @@ function TaskCard({
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap gap-2">
-            <span className="rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">{matrixLabel(task)}</span>
+            <span className={`rounded-full px-2 py-1 text-xs font-bold ${matrixBadgeClass(task)}`}>{matrixLabel(task)}</span>
             <span className={`rounded-full px-2 py-1 text-xs font-bold ${dateDistance(task.due_date) <= 3 ? "bg-dawn/20 text-clay" : "bg-mist text-moss"}`}>
               {dueLabel(task.due_date)}
             </span>
@@ -4215,18 +4324,21 @@ function Matrix({
   onReschedule: (task: Task) => void;
 }) {
   const groups = [
-    ["緊急かつ重要", tasks.filter((task) => task.urgent && task.important)],
-    ["緊急ではないが重要", tasks.filter((task) => !task.urgent && task.important)],
-    ["緊急だが重要ではない", tasks.filter((task) => task.urgent && !task.important)],
-    ["緊急でも重要でもない", tasks.filter((task) => !task.urgent && !task.important)]
+    ["第Ⅰ領域", "重要・緊急", tasks.filter((task) => task.urgent && task.important)],
+    ["第Ⅱ領域", "重要・緊急でない", tasks.filter((task) => !task.urgent && task.important)],
+    ["第Ⅲ領域", "緊急・重要でない", tasks.filter((task) => task.urgent && !task.important)],
+    ["第Ⅳ領域", "重要でも緊急でもない", tasks.filter((task) => !task.urgent && !task.important)]
   ] as const;
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      {groups.map(([label, items]) => (
-        <section key={label} className="rounded-lg bg-mist/55 p-3">
+      {groups.map(([label, description, items]) => (
+        <section key={label} className={`rounded-xl p-3 ${label === "第Ⅱ領域" ? "bg-leaf/10 ring-1 ring-leaf/25" : "bg-mist/55"}`}>
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="font-bold text-ink">{label}</h3>
+            <div>
+              <h3 className="font-bold text-ink">{label}</h3>
+              <p className="text-xs font-bold text-moss">{description}</p>
+            </div>
             <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-moss">{items.length}</span>
           </div>
           <div className="space-y-3">
@@ -4328,37 +4440,37 @@ function InboxList({
 
 function ReflectionForm({
   reflection,
+  records,
   onSubmit
 }: {
   reflection?: Reflection;
+  records: TaskCompletionRecord[];
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  const doneText = records.map((record) => record.title_snapshot).join("\n");
   return (
     <form onSubmit={onSubmit} className="space-y-4">
-      <Field label="今日できたこと">
-        <textarea name="done_text" rows={3} defaultValue={reflection?.done_text} className="input" />
-      </Field>
-      <Field label="できなかったこと">
-        <textarea name="not_done_text" rows={3} defaultValue={reflection?.not_done_text} className="input" />
-      </Field>
-      <Field label="夢に近づいた行動">
-        <textarea name="dream_progress_text" rows={3} defaultValue={reflection?.dream_progress_text} className="input" />
-      </Field>
-      <Field label="明日やること">
-        <textarea name="tomorrow_text" rows={3} defaultValue={reflection?.tomorrow_text} className="input" />
-      </Field>
+      <div className="rounded-xl border border-mist bg-mist/50 p-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <p className="text-sm font-bold text-ink">今日やり遂げたこと</p>
+          <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-moss">{records.length}件</span>
+        </div>
+        {records.length > 0 ? (
+          <ul className="space-y-1 text-sm leading-6 text-ink/70">
+            {records.map((record) => (
+              <li key={record.id}>・{record.title_snapshot}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm leading-6 text-ink/55">今日はまだ消し込みがありません。</p>
+        )}
+        <input type="hidden" name="done_text" value={doneText || reflection?.done_text || ""} />
+      </div>
       <Field label="気づき">
-        <textarea name="insight_text" rows={3} defaultValue={reflection?.insight_text} className="input" />
+        <textarea name="insight_text" rows={4} defaultValue={reflection?.insight_text} placeholder="今日気づいたこと、明日につなげたいこと" className="input" />
       </Field>
-      <Field label="満足度">
-        <input
-          name="satisfaction_score"
-          type="range"
-          min="1"
-          max="5"
-          defaultValue={reflection?.satisfaction_score ?? 3}
-          className="w-full accent-clay"
-        />
+      <Field label="明日やるタスク" hint="1つずつ書くと、明日のタスクとして追加されます。">
+        <textarea name="tomorrow_tasks" rows={3} defaultValue={reflection?.tomorrow_text} placeholder={"例：営業メールを5件送る\n商品ページの写真を差し替える"} className="input" />
       </Field>
       <button type="submit" className="primary-button">
         振り返りを保存
