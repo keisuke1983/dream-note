@@ -229,6 +229,13 @@ const now = () => new Date().toISOString();
 const localUserId = "local-user";
 const storageKey = "ai-dream-note-phase1";
 const journalDateKey = `${storageKey}:current-journal-date`;
+const journalBoundaryHourKey = `${storageKey}:journal-boundary-hour`;
+
+function journalBoundaryHour() {
+  if (typeof window === "undefined") return 3;
+  const value = Number(window.localStorage.getItem(journalBoundaryHourKey) ?? 3);
+  return Number.isFinite(value) && value >= 0 && value <= 23 ? value : 3;
+}
 
 function formatLocalDate(date: Date) {
   const year = date.getFullYear();
@@ -239,7 +246,7 @@ function formatLocalDate(date: Date) {
 
 function systemJournalDate(date = new Date()) {
   const local = new Date(date);
-  if (local.getHours() < 3) local.setDate(local.getDate() - 1);
+  if (local.getHours() < journalBoundaryHour()) local.setDate(local.getDate() - 1);
   return formatLocalDate(local);
 }
 
@@ -668,6 +675,7 @@ export default function App() {
   const [aiWeeklyLoading, setAiWeeklyLoading] = useState(false);
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null);
   const [journalDate, setJournalDate] = useState(() => systemJournalDate());
+  const [boundaryHour, setBoundaryHour] = useState(3);
   const [rolloverOpen, setRolloverOpen] = useState(false);
   const [reflectionDirty, setReflectionDirty] = useState(false);
   const rolloverUndoRef = useRef<{ data: AppData; journalDate: string } | null>(null);
@@ -685,6 +693,7 @@ export default function App() {
 
   useEffect(() => {
     setData(getStoredData());
+    setBoundaryHour(journalBoundaryHour());
     setJournalDate(storedJournalDate());
     setLoaded(true);
 
@@ -2213,6 +2222,7 @@ export default function App() {
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const nextBoundaryHour = Math.max(0, Math.min(23, Number(form.get("journal_boundary_hour") ?? 3)));
     const profile: Profile = {
       ...data.profile,
       user_id: userId,
@@ -2221,6 +2231,13 @@ export default function App() {
     };
     const saved = await persist("profiles", profile);
     if (!saved) return;
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(journalBoundaryHourKey, String(nextBoundaryHour));
+      const nextJournalDate = systemJournalDate();
+      window.localStorage.setItem(journalDateKey, nextJournalDate);
+      setJournalDate(nextJournalDate);
+    }
+    setBoundaryHour(nextBoundaryHour);
     setData((current) => ({ ...current, profile }));
     setNotice({ type: "success", message: "保存しました" });
   }
@@ -2245,6 +2262,18 @@ export default function App() {
       {tab === "home" && (
         <section className="space-y-4">
           <MotivationCardStrip cards={visibleMotivationCards} startIndex={motivationCardIndex} onEdit={() => setTab("settings")} />
+          <HomeWeeklyGoalPanel
+            weeklyGoals={homeWeeklyGoals}
+            goals={data.goals}
+            tasks={data.tasks}
+            completionRecords={data.taskCompletionRecords}
+            onOpenGoals={() => {
+              setSelectedGoalLevel("weekly");
+              setEditingGoalId(null);
+              setGoalDraft({ level: "weekly", status: "todo" });
+              setTab("goals");
+            }}
+          />
           <Panel title="今日やること" icon={ListChecks}>
             <HomeTodayPanel
               suggestion={todayAiSuggestion?.output_json}
@@ -2271,7 +2300,6 @@ export default function App() {
             fiveYearGoals={homeFiveYearGoals}
             yearGoals={homeYearGoals}
             monthlyGoals={homeMonthlyGoals}
-            weeklyGoals={homeWeeklyGoals}
             goals={data.goals}
             tasks={data.tasks}
             completionRecords={data.taskCompletionRecords}
@@ -2484,6 +2512,15 @@ export default function App() {
             <form onSubmit={saveProfile} className="space-y-4">
               <Field label="表示名">
                 <input name="display_name" defaultValue={data.profile.display_name} className="input" />
+              </Field>
+              <Field label="日付の切り替え時刻" hint="夜の振り返りが0時をまたいでも同じ手帳日にするための設定です。">
+                <select name="journal_boundary_hour" defaultValue={boundaryHour} className="input">
+                  {Array.from({ length: 24 }, (_, hour) => (
+                    <option key={hour} value={hour}>
+                      {hour}:00
+                    </option>
+                  ))}
+                </select>
               </Field>
               <button className="primary-button" type="submit">
                 保存
@@ -2744,12 +2781,20 @@ function MotivationCardStrip({
   startIndex: number;
   onEdit: () => void;
 }) {
-  if (cards.length === 0) return null;
+  if (cards.length === 0) {
+    return (
+      <button type="button" onClick={onEdit} className="tap-highlight w-full rounded-2xl border border-mist bg-white/80 p-3 text-left shadow-soft">
+        <p className="text-xs font-bold text-moss">理想の未来</p>
+        <p className="mt-1 text-sm font-bold text-ink">なぜこの目標を達成したいかを登録</p>
+        <p className="mt-1 text-xs leading-5 text-ink/55">写真や言葉を1枚だけ入れると、朝に目的を思い出せます。</p>
+      </button>
+    );
+  }
   const orderedCards = [...cards.slice(startIndex), ...cards.slice(0, startIndex)].slice(0, 5);
   return (
-    <section className="rounded-lg border border-mist bg-white/80 p-3">
+    <section className="rounded-2xl border border-mist bg-white/80 p-3 shadow-soft">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <p className="text-xs font-bold text-moss">今日の原点</p>
+        <p className="text-xs font-bold text-moss">理想の未来</p>
         <button className="text-xs font-bold text-clay" onClick={onEdit}>
           編集
         </button>
@@ -2776,6 +2821,57 @@ function MotivationCardStrip({
         ))}
       </div>
     </section>
+  );
+}
+
+function HomeWeeklyGoalPanel({
+  weeklyGoals,
+  goals,
+  tasks,
+  completionRecords,
+  onOpenGoals
+}: {
+  weeklyGoals: Goal[];
+  goals: Goal[];
+  tasks: Task[];
+  completionRecords: TaskCompletionRecord[];
+  onOpenGoals: () => void;
+}) {
+  const primaryGoal = weeklyGoals[0];
+  const progress = primaryGoal ? goalProgress(primaryGoal, goals, tasks, completionRecords) : null;
+  const childItems = progress ? [...progress.childGoals.map((goal) => goal.title), ...progress.childTasks.map((task) => task.title)].slice(0, 3) : [];
+  return (
+    <button
+      type="button"
+      onClick={onOpenGoals}
+      className="tap-highlight w-full rounded-2xl border border-leaf/25 bg-leaf/10 p-4 text-left shadow-soft"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white text-moss">
+            <ClipboardList className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-moss">今週の目標</p>
+            <h2 className="line-clamp-1 text-lg font-bold text-ink">{primaryGoal?.title ?? "今週やることを決める"}</h2>
+          </div>
+        </div>
+        <span className="shrink-0 rounded-full bg-white px-2 py-1 text-xs font-bold text-moss">
+          {primaryGoal ? dueLabel(primaryGoal.deadline) : "追加"}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-1">
+        {childItems.length > 0 ? (
+          childItems.map((item) => (
+            <p key={item} className="line-clamp-1 text-sm leading-5 text-ink/70">
+              ・{item}
+            </p>
+          ))
+        ) : (
+          <p className="text-sm leading-6 text-ink/60">今月の目標を見ながら、今週やることを設定します。</p>
+        )}
+      </div>
+    </button>
   );
 }
 
@@ -3021,7 +3117,6 @@ function HomeGoalCarousel({
   fiveYearGoals,
   yearGoals,
   monthlyGoals,
-  weeklyGoals,
   goals,
   tasks,
   completionRecords,
@@ -3033,7 +3128,6 @@ function HomeGoalCarousel({
   fiveYearGoals: Goal[];
   monthlyGoals: Goal[];
   yearGoals: Goal[];
-  weeklyGoals: Goal[];
   goals: Goal[];
   tasks: Task[];
   completionRecords: TaskCompletionRecord[];
@@ -3042,14 +3136,6 @@ function HomeGoalCarousel({
 }) {
   const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
   const cards = [
-    {
-      key: "weekly",
-      period: "今週",
-      icon: ClipboardList,
-      level: "weekly" as GoalLevel,
-      goals: weeklyGoals,
-      emptyText: "今週目標を登録"
-    },
     {
       key: "monthly",
       period: "今月",
@@ -3992,19 +4078,22 @@ function GoalForm({
         </div>
       </Field>
       <Field label="期間設定">
-        <select name="level" value={selectedLevel} onChange={(event) => setSelectedLevel(event.target.value as GoalLevel)} className="input">
-          {newGoalLevels.map((level) => (
-            <option key={level} value={level}>
-              {goalLabels[level]}
-            </option>
-          ))}
-          {goal && legacyGoalLevels.includes(goal.level as (typeof legacyGoalLevels)[number]) && (
-            <option value={goal.level}>{goalLabels[goal.level]}</option>
-          )}
-        </select>
-      </Field>
-      <Field label="達成日" hint="カレンダーでも手入力でも設定できます。">
-        <DeadlineInput name="deadline" defaultValue={goal?.deadline ?? draft?.deadline} />
+        <div className="space-y-3 rounded-xl border border-mist bg-white p-3">
+          <select name="level" value={selectedLevel} onChange={(event) => setSelectedLevel(event.target.value as GoalLevel)} className="input">
+            {newGoalLevels.map((level) => (
+              <option key={level} value={level}>
+                {goalLabels[level]}
+              </option>
+            ))}
+            {goal && legacyGoalLevels.includes(goal.level as (typeof legacyGoalLevels)[number]) && (
+              <option value={goal.level}>{goalLabels[goal.level]}</option>
+            )}
+          </select>
+          <div>
+            <p className="mb-2 text-xs font-bold text-moss">達成日</p>
+            <DeadlineInput name="deadline" defaultValue={goal?.deadline ?? draft?.deadline} />
+          </div>
+        </div>
       </Field>
 
       <details className="rounded-lg border border-mist bg-white/70 p-3" open={Boolean(goal?.description || goal?.parent_goal_id || selectedDreamId)}>
