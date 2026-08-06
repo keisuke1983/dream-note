@@ -298,8 +298,8 @@ const legacyGoalLevels = ["three_year", "daily"] as const;
 const goalLabels: Record<GoalLevel, string> = {
   twenty_year: "20年後",
   ten_year: "10年後",
-  five_year: "5年計画",
-  one_year: "1年目標",
+  five_year: "5年後",
+  one_year: "今年の目標",
   monthly: "今月目標",
   weekly: "今週目標",
   daily: "旧・今日の行動",
@@ -1222,7 +1222,7 @@ export default function App() {
     upsertLocal("dreams", dream);
     setEditingDreamId(null);
     if (!existing) setDreamFormVersion((version) => version + 1);
-    setNotice({ type: "success", message: "保存しました" });
+    setNotice({ type: "success", message: existing ? "保存しました" : "入力しました" });
     setTab("dreams");
   }
 
@@ -1326,7 +1326,7 @@ export default function App() {
       setGoalFormVersion((version) => version + 1);
     }
     setSelectedGoalLevel(goal.level);
-    setNotice({ type: "success", message: "保存しました" });
+    setNotice({ type: "success", message: existing ? "保存しました" : "入力しました" });
   }
 
   async function saveTask(event: FormEvent<HTMLFormElement>) {
@@ -1388,7 +1388,7 @@ export default function App() {
       setTaskDraft(null);
       setTaskFormVersion((version) => version + 1);
     }
-    setNotice({ type: "success", message: "保存しました" });
+    setNotice({ type: "success", message: existing ? "保存しました" : "入力しました" });
     setTab("tasks");
   }
 
@@ -1411,7 +1411,7 @@ export default function App() {
     upsertLocal("inbox", item);
     setEditingInboxId(null);
     if (!existing) setInboxFormVersion((version) => version + 1);
-    setNotice({ type: "success", message: "保存しました" });
+    setNotice({ type: "success", message: existing ? "保存しました" : "入力しました" });
   }
 
   function startDecomposeGoal(goal: Goal) {
@@ -2208,7 +2208,7 @@ export default function App() {
     upsertLocal("motivationCards", card);
     setEditingMotivationCardId(null);
     if (!existing) setMotivationCardFormVersion((version) => version + 1);
-    setNotice({ type: "success", message: "保存しました" });
+    setNotice({ type: "success", message: existing ? "保存しました" : "入力しました" });
   }
 
   async function toggleMotivationCard(card: MotivationCard) {
@@ -2270,7 +2270,13 @@ export default function App() {
             onOpenGoals={() => {
               setSelectedGoalLevel("weekly");
               setEditingGoalId(null);
-              setGoalDraft({ level: "weekly", status: "todo" });
+              setGoalDraft(null);
+              setTab("goals");
+            }}
+            onEdit={() => {
+              setSelectedGoalLevel("weekly");
+              setEditingGoalId(homeWeeklyGoals[0]?.id ?? null);
+              setGoalDraft(homeWeeklyGoals[0] ? null : { level: "weekly", status: "todo" });
               setTab("goals");
             }}
           />
@@ -2281,19 +2287,28 @@ export default function App() {
               tasks={data.tasks}
               dreams={data.dreams}
               goals={data.goals}
-              loading={aiTodayLoading}
-              canGenerate={todayAiInput.tasks.length > 0}
-              onGenerate={() => void generateTodayActionsWithAi()}
               onComplete={completeTask}
               onEdit={(task) => {
                 setTaskDraft(null);
                 setEditingTaskId(task.id);
                 setTab("tasks");
               }}
-              onArchive={archiveTask}
               onReschedule={(task) => setReschedulingTaskId(task.id)}
             />
           </Panel>
+          <TodayCompletedPanel
+            records={todayCompletionRecords}
+            tasks={data.tasks}
+            dreams={data.dreams}
+            goals={data.goals}
+            onUndo={(record) => void undoTaskCompletion(record)}
+            onEditTask={(task) => {
+              setTaskDraft(null);
+              setEditingTaskId(task.id);
+              setTab("tasks");
+            }}
+            onUpdateTime={(record, timeValue) => void updateCompletionTime(record, timeValue)}
+          />
           <HomeGoalCarousel
             twentyYearGoals={homeTwentyYearGoals}
             tenYearGoals={homeTenYearGoals}
@@ -2310,19 +2325,6 @@ export default function App() {
               setGoalDraft({ level, status: "todo" });
               setTab("goals");
             }}
-          />
-          <TodayCompletedPanel
-            records={todayCompletionRecords}
-            tasks={data.tasks}
-            dreams={data.dreams}
-            goals={data.goals}
-            onUndo={(record) => void undoTaskCompletion(record)}
-            onEditTask={(task) => {
-              setTaskDraft(null);
-              setEditingTaskId(task.id);
-              setTab("tasks");
-            }}
-            onUpdateTime={(record, timeValue) => void updateCompletionTime(record, timeValue)}
           />
         </section>
       )}
@@ -2397,7 +2399,7 @@ export default function App() {
               }}
             />
           </Panel>
-          <Panel title="計画の流れ" icon={CalendarDays}>
+          <Panel title="目標一覧" icon={CalendarDays}>
             {activeGoals.length === 0 ? (
               <Empty text="夢を5年、1年、今月、今週、今日へ分解します。全部を一度に作らなくても大丈夫です。" />
             ) : (
@@ -2623,7 +2625,7 @@ export default function App() {
 function NoticeBar({ notice, onClose }: { notice: Notice; onClose: () => void }) {
   return (
     <div
-      className={`mb-4 flex items-start justify-between gap-3 rounded-lg border p-3 text-sm ${
+      className={`fixed inset-x-4 bottom-24 z-40 mx-auto flex max-w-lg items-start justify-between gap-3 rounded-2xl border p-3 text-sm shadow-soft lg:bottom-6 ${
         notice.type === "error" ? "border-red-200 bg-red-50 text-red-800" : "border-leaf/30 bg-white/80 text-moss"
       }`}
     >
@@ -2829,23 +2831,20 @@ function HomeWeeklyGoalPanel({
   goals,
   tasks,
   completionRecords,
-  onOpenGoals
+  onOpenGoals,
+  onEdit
 }: {
   weeklyGoals: Goal[];
   goals: Goal[];
   tasks: Task[];
   completionRecords: TaskCompletionRecord[];
   onOpenGoals: () => void;
+  onEdit: () => void;
 }) {
   const primaryGoal = weeklyGoals[0];
   const progress = primaryGoal ? goalProgress(primaryGoal, goals, tasks, completionRecords) : null;
-  const childItems = progress ? [...progress.childGoals.map((goal) => goal.title), ...progress.childTasks.map((task) => task.title)].slice(0, 3) : [];
   return (
-    <button
-      type="button"
-      onClick={onOpenGoals}
-      className="tap-highlight w-full rounded-2xl border border-leaf/25 bg-leaf/10 p-4 text-left shadow-soft"
-    >
+    <section className="rounded-2xl border border-leaf/25 bg-leaf/10 p-4 shadow-soft">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white text-moss">
@@ -2860,18 +2859,20 @@ function HomeWeeklyGoalPanel({
           {primaryGoal ? dueLabel(primaryGoal.deadline) : "追加"}
         </span>
       </div>
-      <div className="mt-3 grid gap-1">
-        {childItems.length > 0 ? (
-          childItems.map((item) => (
-            <p key={item} className="line-clamp-1 text-sm leading-5 text-ink/70">
-              ・{item}
-            </p>
-          ))
-        ) : (
-          <p className="text-sm leading-6 text-ink/60">今月の目標を見ながら、今週やることを設定します。</p>
-        )}
+      <p className="mt-3 text-sm leading-6 text-ink/65">
+        {primaryGoal
+          ? `紐づくタスク ${progress?.childTasks.length ?? 0}件 / 下位目標 ${progress?.childGoals.length ?? 0}件`
+          : "今月の目標を見ながら、今週やることを設定します。"}
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button type="button" className="primary-button" onClick={onOpenGoals}>
+          タスクを見る
+        </button>
+        <button type="button" className="secondary-button" onClick={onEdit}>
+          編集
+        </button>
       </div>
-    </button>
+    </section>
   );
 }
 
@@ -2998,12 +2999,8 @@ function HomeTodayPanel({
   tasks,
   dreams,
   goals,
-  loading,
-  canGenerate,
-  onGenerate,
   onComplete,
   onEdit,
-  onArchive,
   onReschedule
 }: {
   suggestion?: TodayAiSuggestionOutput;
@@ -3011,12 +3008,8 @@ function HomeTodayPanel({
   tasks: Task[];
   dreams: Dream[];
   goals: Goal[];
-  loading: boolean;
-  canGenerate: boolean;
-  onGenerate: () => void;
   onComplete: (task: Task) => Promise<void>;
   onEdit: (task: Task) => void;
-  onArchive: (task: Task) => Promise<void>;
   onReschedule: (task: Task) => void;
 }) {
   const taskById = new Map(tasks.map((task) => [task.id, task]));
@@ -3036,9 +3029,6 @@ function HomeTodayPanel({
     return (
       <div className="space-y-3">
         <Empty text="今日やる候補はまだありません。重要タスク、期限つきタスク、夢に紐づくタスクを追加してください。" />
-        <button className="secondary-button" onClick={onGenerate} disabled={loading || !canGenerate}>
-          <Sparkles className="h-4 w-4" /> {loading ? "整理中" : "AIで候補を整理"}
-        </button>
       </div>
     );
   }
@@ -3081,9 +3071,6 @@ function HomeTodayPanel({
               <button className="mini-button" onClick={() => onReschedule(task)}>
                 <CalendarDays className="h-3.5 w-3.5" /> 転記
               </button>
-              <button className="mini-button" onClick={() => void onArchive(task)}>
-                <Archive className="h-3.5 w-3.5" /> 保留
-              </button>
             </div>
           </div>
         </div>
@@ -3103,9 +3090,6 @@ function HomeTodayPanel({
         <p className="text-xs leading-5 text-ink/55">
           {suggestion?.summary ?? "期限、重要度、夢・目標とのつながりから今日の候補を表示しています。"}
         </p>
-        <button className="secondary-button shrink-0 sm:w-auto" onClick={onGenerate} disabled={loading || !canGenerate}>
-          <Sparkles className="h-4 w-4" /> {loading ? "整理中" : suggestion ? "AI整理済み" : "AIで整理"}
-        </button>
       </div>
     </div>
   );
@@ -3189,14 +3173,6 @@ function HomeGoalCarousel({
           const goal = card.goals[0];
           const dream = goal ? dreamById.get(goal.dream_id ?? "") : undefined;
           const Icon = card.icon;
-          const progress = goal ? goalProgress(goal, goals, tasks, completionRecords) : null;
-          const childItems = goal
-            ? [
-                ...progress!.childGoals.map((child) => child.title),
-                ...progress!.childTasks.map((task) => task.title)
-              ].slice(0, 3)
-            : [];
-          const total = progress?.total ?? 0;
           return (
             <button
               key={card.key}
@@ -3222,23 +3198,8 @@ function HomeGoalCarousel({
               <p className="mt-1 line-clamp-1 text-[11px] text-ink/50">
                 {goal ? `関連：${dream?.title ?? "未紐づけ"}` : "タップして追加"}
               </p>
-              <div className="mt-2 space-y-1">
-                <p className="text-[11px] font-bold text-moss">達成するためのタスク</p>
-                {childItems.length > 0 ? (
-                  childItems.map((item) => (
-                    <p key={item} className="line-clamp-1 text-[11px] leading-4 text-ink/60">
-                      ・{item}
-                    </p>
-                  ))
-                ) : (
-                  <p className="text-[11px] leading-4 text-ink/45">下位項目はあとから追加できます。</p>
-                )}
-              </div>
-              {(card.goals.length > 1 || childItems.length < total) && (
-                <p className="mt-1 text-[11px] font-semibold text-moss">
-                  他 {Math.max(card.goals.length - 1, total - childItems.length)} 件
-                </p>
-              )}
+              <p className="mt-3 text-[11px] font-bold text-clay">詳細を見る</p>
+              {card.goals.length > 1 && <p className="mt-1 text-[11px] font-semibold text-moss">他 {card.goals.length - 1} 件</p>}
             </button>
           );
         })}
@@ -3341,13 +3302,13 @@ function TodayAiPanel({
     <div className="space-y-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-sm font-bold text-ink">{suggestion?.headline ?? "今日の優先順をAIで整理"}</p>
+          <p className="text-sm font-bold text-ink">{suggestion?.headline ?? "今日の優先順を確認"}</p>
           <p className="mt-1 text-xs leading-5 text-ink/65">
             {suggestion?.summary ?? "既存の今日候補から、夢につながる重要行動を含めておすすめ順を出します。"}
           </p>
         </div>
         <button className="primary-button shrink-0" onClick={onGenerate} disabled={loading || !canGenerate}>
-          <Sparkles className="h-4 w-4" /> {loading ? "生成中" : suggestion ? "最新です" : "AIで整理"}
+          <Sparkles className="h-4 w-4" /> {loading ? "生成中" : suggestion ? "最新です" : "候補を確認"}
         </button>
       </div>
 
@@ -4011,9 +3972,29 @@ function GoalForm({
       .slice(0, 4)
       .map((item) => `メモ: ${item.title}`)
   ].slice(0, 6);
+  const contextGoals = selectedLevel === "weekly"
+    ? goals.filter((candidate) => candidate.level === "monthly" && candidate.status !== "archived").sort(sortGoalsByPlan).slice(0, 5)
+    : selectedLevel === "monthly"
+      ? goals.filter((candidate) => candidate.level === "one_year" && candidate.status !== "archived").sort(sortGoalsByPlan).slice(0, 5)
+      : [];
+  const contextLabel = selectedLevel === "weekly" ? "今月の目標" : selectedLevel === "monthly" ? "今年の目標" : "";
 
   return (
     <form key={goal?.id ?? `new-goal-${draft?.parent_goal_id ?? "blank"}-${draft?.level ?? "monthly"}`} onSubmit={onSubmit} className="space-y-4">
+      {contextGoals.length > 0 && (
+        <div className="rounded-2xl border border-leaf/20 bg-leaf/10 p-3">
+          <p className="text-xs font-bold text-moss">{contextLabel}を見ながら決める</p>
+          <div className="mt-2 flex snap-x snap-mandatory gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {contextGoals.map((contextGoal) => (
+              <div key={contextGoal.id} className="min-w-[82%] snap-start rounded-xl bg-white p-3 sm:min-w-[18rem]">
+                <p className="text-[11px] font-bold text-clay">{goalLabels[contextGoal.level]}</p>
+                <p className="mt-1 line-clamp-2 text-sm font-bold text-ink">{contextGoal.title}</p>
+                <p className="mt-1 text-xs text-ink/50">達成日 {contextGoal.deadline ?? "未設定"}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <Field label="目標">
         <input name="title" required defaultValue={goal?.title ?? draft?.title ?? ""} placeholder="例：月商100万円を達成する" className="input" />
       </Field>
@@ -4296,16 +4277,13 @@ function GoalCard({
       <p className="mt-1 text-xs text-ink/55">つながる目標：{parentGoal ? `${goalLabels[parentGoal.level]}・${parentGoal.title}` : "未設定"}</p>
       <div className="mt-3 rounded-lg bg-mist/45 p-3">
         <div className="flex items-center justify-between gap-2 text-xs font-bold text-moss">
-          <span>実現するためのタスク</span>
+          <span>紐づくタスク数</span>
           <span>
             {progress.done} / {progress.total}
           </span>
         </div>
-        <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
-          <div className="h-full rounded-full bg-leaf" style={{ width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%` }} />
-        </div>
         <details className="mt-2 text-xs text-ink/65">
-          <summary className="cursor-pointer font-bold text-clay">実現するためのタスクを見る</summary>
+          <summary className="cursor-pointer font-bold text-clay">タスクを見る</summary>
           <ul className="mt-2 space-y-1 leading-5">
             {progress.childGoals.map((child) => (
               <li key={child.id}>・{child.status === "done" ? <RedPenText>{child.title}</RedPenText> : child.title}</li>
@@ -4320,19 +4298,24 @@ function GoalCard({
       <div className="mt-4 flex flex-wrap gap-2">
         {nextStep && (
           <button className="mini-button bg-mist text-moss" onClick={onDecompose}>
-            <Plus className="h-3.5 w-3.5" /> {nextStep === "task" ? "今日の行動へ" : `${goalLabels[nextStep]}へ分解`}
+            <Plus className="h-3.5 w-3.5" /> タスク追加
           </button>
         )}
         <button className="mini-button" onClick={onEdit}>
           <Edit3 className="h-3.5 w-3.5" /> 編集
         </button>
-        <button className="mini-button" onClick={onArchive}>
-          <Archive className="h-3.5 w-3.5" /> アーカイブ
-        </button>
-        <button className="mini-button text-clay" onClick={onDelete}>
-          <X className="h-3.5 w-3.5" /> 削除
-        </button>
       </div>
+      <details className="mt-3 text-xs text-ink/55">
+        <summary className="cursor-pointer font-bold">その他</summary>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button className="mini-button" onClick={onArchive}>
+            <Archive className="h-3.5 w-3.5" /> アーカイブ
+          </button>
+          <button className="mini-button text-clay" onClick={onDelete}>
+            <X className="h-3.5 w-3.5" /> 削除
+          </button>
+        </div>
+      </details>
     </article>
   );
 }
