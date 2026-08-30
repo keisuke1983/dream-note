@@ -52,6 +52,8 @@ type Goal = {
   user_id: string;
   dream_id: string | null;
   parent_goal_id?: string | null;
+  period_start?: DateValue;
+  period_end?: DateValue;
   title: string;
   description: string;
   level: GoalLevel;
@@ -210,6 +212,12 @@ type AppData = {
   profile: Profile;
 };
 
+type WeeklyPlanDraft = {
+  title: string;
+  parentGoalId: string;
+  tasks: string[];
+};
+
 type CollectionKey =
   | "dreams"
   | "goals"
@@ -221,7 +229,7 @@ type CollectionKey =
   | "reflections"
   | "taskCompletionRecords"
   | "motivationCards";
-type Tab = "home" | "dreams" | "goals" | "tasks" | "matrix" | "inbox" | "reflect" | "settings";
+type Tab = "home" | "dreams" | "goals" | "tasks" | "matrix" | "inbox" | "reflect" | "settings" | "weekPlan" | "todayPlan";
 type Notice = { type: "success" | "error"; message: string; actionLabel?: string; onAction?: () => void };
 type GoalLevel = "twenty_year" | "ten_year" | "five_year" | "one_year" | "monthly" | "weekly" | "daily" | "three_year";
 
@@ -292,7 +300,8 @@ function sortGoalsByPlan(a: Goal, b: Goal) {
 }
 
 const newGoalLevels = ["twenty_year", "ten_year", "five_year", "one_year", "monthly", "weekly"] as const;
-const homeGoalLevels = ["weekly", "monthly", "one_year", "five_year", "ten_year", "twenty_year"] as const;
+const operationalGoalLevels = ["weekly", "monthly", "one_year", "ten_year", "twenty_year"] as const;
+const homeGoalLevels = ["weekly", "monthly", "one_year", "ten_year", "twenty_year"] as const;
 const legacyGoalLevels = ["three_year", "daily"] as const;
 
 const goalLabels: Record<GoalLevel, string> = {
@@ -505,7 +514,7 @@ function simpleHash(text: string) {
 function addDays(date: string, days: number) {
   const base = new Date(`${date}T00:00:00`);
   base.setDate(base.getDate() + days);
-  return base.toISOString().slice(0, 10);
+  return formatLocalDate(base);
 }
 
 function weekBounds(date = today()) {
@@ -513,13 +522,73 @@ function weekBounds(date = today()) {
   const day = base.getDay();
   const mondayOffset = day === 0 ? -6 : 1 - day;
   base.setDate(base.getDate() + mondayOffset);
-  const weekStart = base.toISOString().slice(0, 10);
+  const weekStart = formatLocalDate(base);
   return { weekStart, weekEnd: addDays(weekStart, 6) };
 }
 
 function monthEnd(date = today()) {
   const base = new Date(`${date}T00:00:00`);
-  return new Date(base.getFullYear(), base.getMonth() + 1, 0).toISOString().slice(0, 10);
+  return formatLocalDate(new Date(base.getFullYear(), base.getMonth() + 1, 0));
+}
+
+function monthBounds(date = today()) {
+  const base = new Date(`${date}T00:00:00`);
+  return {
+    monthStart: formatLocalDate(new Date(base.getFullYear(), base.getMonth(), 1)),
+    monthEnd: formatLocalDate(new Date(base.getFullYear(), base.getMonth() + 1, 0))
+  };
+}
+
+function yearBounds(date = today()) {
+  const base = new Date(`${date}T00:00:00`);
+  return {
+    yearStart: `${base.getFullYear()}-01-01`,
+    yearEnd: `${base.getFullYear()}-12-31`
+  };
+}
+
+function goalPeriodBounds(level: GoalLevel, baseDate: DateValue) {
+  const base = baseDate ?? today();
+  if (level === "weekly" || level === "daily") {
+    const { weekStart, weekEnd } = weekBounds(base);
+    return { period_start: weekStart, period_end: weekEnd };
+  }
+  if (level === "monthly") {
+    const { monthStart, monthEnd: end } = monthBounds(base);
+    return { period_start: monthStart, period_end: end };
+  }
+  if (level === "one_year") {
+    const { yearStart, yearEnd } = yearBounds(base);
+    return { period_start: yearStart, period_end: yearEnd };
+  }
+  return { period_start: null, period_end: baseDate };
+}
+
+function defaultDeadlineForLevel(level: GoalLevel, baseDate = today()) {
+  if (level === "weekly" || level === "daily") return weekBounds(baseDate).weekEnd;
+  if (level === "monthly") return monthBounds(baseDate).monthEnd;
+  if (level === "one_year") return yearBounds(baseDate).yearEnd;
+  return null;
+}
+
+function goalInPeriod(goal: Goal, level: GoalLevel, periodStart?: string, periodEnd?: string) {
+  if (goal.level !== level) return false;
+  if (!periodStart || !periodEnd) return true;
+  const start = goal.period_start ?? goal.deadline;
+  const end = goal.period_end ?? goal.deadline;
+  if (!start && !end) return true;
+  return (!start || start <= periodEnd) && (!end || end >= periodStart);
+}
+
+function periodLabel(goal: Goal) {
+  if (goal.period_start && goal.period_end) return `${goal.period_start}〜${goal.period_end}`;
+  return goal.deadline ?? "期間未設定";
+}
+
+function isPastPeriodGoal(goal: Goal, baseDate = today()) {
+  if (!["weekly", "monthly", "one_year"].includes(goal.level)) return false;
+  const end = goal.period_end ?? goal.deadline;
+  return Boolean(end && end < baseDate);
 }
 
 function nextWeekStart(date = today()) {
@@ -997,13 +1066,17 @@ export default function App() {
     [data.todayAiSuggestions, todayAiContextHash, journalDate]
   );
 
+  const currentWeek = useMemo(() => weekBounds(journalDate), [journalDate]);
+  const currentMonth = useMemo(() => monthBounds(journalDate), [journalDate]);
+  const currentYear = useMemo(() => yearBounds(journalDate), [journalDate]);
+
   const homeMonthlyGoals = useMemo(
     () =>
       activeGoals
-        .filter((goal) => goal.level === "monthly")
+        .filter((goal) => goalInPeriod(goal, "monthly", currentMonth.monthStart, currentMonth.monthEnd))
         .sort((a, b) => dateDistance(a.deadline) - dateDistance(b.deadline))
         .slice(0, 3),
-    [activeGoals]
+    [activeGoals, currentMonth.monthEnd, currentMonth.monthStart]
   );
 
   const homeTwentyYearGoals = useMemo(
@@ -1027,28 +1100,27 @@ export default function App() {
   const homeWeeklyGoals = useMemo(
     () =>
       activeGoals
-        .filter((goal) => goal.level === "weekly")
+        .filter((goal) => goalInPeriod(goal, "weekly", currentWeek.weekStart, currentWeek.weekEnd))
         .sort((a, b) => dateDistance(a.deadline) - dateDistance(b.deadline))
         .slice(0, 3),
-    [activeGoals]
+    [activeGoals, currentWeek.weekEnd, currentWeek.weekStart]
   );
+
+  const weeklyPlanTasks = useMemo(() => {
+    const weeklyGoalIds = new Set(homeWeeklyGoals.map((goal) => goal.id));
+    return data.tasks
+      .filter((task) => task.status !== "done" && task.status !== "archived" && !isRecurringTask(task))
+      .filter((task) => task.goal_id && weeklyGoalIds.has(task.goal_id))
+      .sort((a, b) => dateDistance(a.due_date) - dateDistance(b.due_date) || a.created_at.localeCompare(b.created_at));
+  }, [data.tasks, homeWeeklyGoals]);
 
   const homeYearGoals = useMemo(
     () =>
       activeGoals
-        .filter((goal) => goal.level === "one_year")
+        .filter((goal) => goalInPeriod(goal, "one_year", currentYear.yearStart, currentYear.yearEnd))
         .sort((a, b) => dateDistance(a.deadline) - dateDistance(b.deadline))
         .slice(0, 3),
-    [activeGoals]
-  );
-
-  const homeFiveYearGoals = useMemo(
-    () =>
-      activeGoals
-        .filter((goal) => goal.level === "five_year" || goal.level === "three_year")
-        .sort((a, b) => dateDistance(a.deadline) - dateDistance(b.deadline))
-        .slice(0, 4),
-    [activeGoals]
+    [activeGoals, currentYear.yearEnd, currentYear.yearStart]
   );
 
   const visibleMotivationCards = useMemo(
@@ -1069,7 +1141,6 @@ export default function App() {
     }
   }, [visibleMotivationCards, journalDate]);
 
-  const currentWeek = useMemo(() => weekBounds(journalDate), [journalDate]);
   const weeklyReviewInput = useMemo<WeeklyReviewInput>(() => {
     const goalMap = new Map(data.goals.map((goal) => [goal.id, goal]));
     const dreamMap = new Map(data.dreams.map((dream) => [dream.id, dream]));
@@ -1230,11 +1301,13 @@ export default function App() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const existing = editingGoal;
+    const selectedLevel = String(form.get("level") ?? "monthly") as Goal["level"];
     const deadline = normalizeDate(form.get("deadline"));
     if (deadline === "invalid") {
       setNotice({ type: "error", message: "期限は YYYY-MM-DD 形式で入力してください。" });
       return;
     }
+    const finalDeadline = deadline ?? defaultDeadlineForLevel(selectedLevel);
     const parentId = normalizeId(form.get("parent_goal_id"));
     if (existing && parentId && goalDescendantIds(existing.id, data.goals).has(parentId)) {
       setNotice({ type: "error", message: "下位の項目を上位項目にはできません。親子関係を確認してください。" });
@@ -1245,11 +1318,12 @@ export default function App() {
       user_id: userId,
       dream_id: normalizeId(form.get("dream_id")),
       parent_goal_id: parentId,
+      ...goalPeriodBounds(selectedLevel, finalDeadline),
       title: String(form.get("title") ?? ""),
       description: String(form.get("description") ?? ""),
-      level: String(form.get("level") ?? "monthly") as Goal["level"],
+      level: selectedLevel,
       category: String(form.get("category") ?? existing?.category ?? dreamPillars[0]),
-      deadline,
+      deadline: finalDeadline,
       status: existing?.status ?? "todo",
       created_at: existing?.created_at ?? now(),
       updated_at: now()
@@ -1263,6 +1337,7 @@ export default function App() {
             user_id: userId,
             dream_id: goal.dream_id,
             parent_goal_id: goal.id,
+            ...goalPeriodBounds(nextStep, goal.deadline),
             title,
             description: "",
             level: nextStep,
@@ -1327,6 +1402,176 @@ export default function App() {
     }
     setSelectedGoalLevel(goal.level);
     setNotice({ type: "success", message: existing ? "保存しました" : "入力しました" });
+  }
+
+  async function planTaskForToday(task: Task) {
+    const updated: Task = {
+      ...task,
+      due_date: today(),
+      status: task.status === "done" ? "todo" : task.status,
+      completed_at: task.status === "done" ? null : task.completed_at,
+      updated_at: now()
+    };
+    const saved = await persist("tasks", updated);
+    if (!saved) return;
+    upsertLocal("tasks", updated);
+    setNotice({ type: "success", message: "今日やることへ移しました" });
+  }
+
+  async function saveWeeklyPlan(plans: WeeklyPlanDraft[]) {
+    const cleanedPlans = plans
+      .map((plan) => ({
+        ...plan,
+        title: plan.title.trim(),
+        tasks: plan.tasks.map((task) => task.trim()).filter(Boolean).slice(0, 12)
+      }))
+      .filter((plan) => plan.title);
+    if (cleanedPlans.length === 0) {
+      setNotice({ type: "error", message: "今週の目標を1件以上入力してください。" });
+      return;
+    }
+
+    const createdGoals: Goal[] = [];
+    const createdTasks: Task[] = [];
+    for (const plan of cleanedPlans) {
+      const parent = activeGoals.find((goal) => goal.id === plan.parentGoalId);
+      const goal: Goal = {
+        id: crypto.randomUUID(),
+        user_id: userId,
+        dream_id: parent?.dream_id ?? null,
+        parent_goal_id: parent?.id ?? null,
+        ...goalPeriodBounds("weekly", currentWeek.weekEnd),
+        title: plan.title,
+        description: "",
+        level: "weekly",
+        category: parent?.category ?? dreamPillars[0],
+        deadline: currentWeek.weekEnd,
+        status: "todo",
+        created_at: now(),
+        updated_at: now()
+      };
+      createdGoals.push(goal);
+      createdTasks.push(
+        ...plan.tasks.map((title) => ({
+          id: crypto.randomUUID(),
+          user_id: userId,
+          dream_id: goal.dream_id,
+          goal_id: goal.id,
+          title,
+          memo: "",
+          due_date: currentWeek.weekEnd,
+          urgent: false,
+          important: false,
+          status: "todo" as const,
+          completed_at: null,
+          reschedule_count: 0,
+          last_rescheduled_at: null,
+          rescheduled_from: null,
+          rescheduled_to: null,
+          reschedule_history: [],
+          recurrence_type: "none" as const,
+          recurrence_weekdays: [],
+          recurrence_day_of_month: null,
+          recurrence_start_date: null,
+          recurrence_active: false,
+          created_at: now(),
+          updated_at: now()
+        }))
+      );
+    }
+
+    for (const goal of createdGoals) {
+      const saved = await persist("goals", goal);
+      if (!saved) return;
+    }
+    for (const task of createdTasks) {
+      const saved = await persist("tasks", task);
+      if (!saved) return;
+    }
+    setData((current) => ({
+      ...current,
+      goals: [...createdGoals, ...current.goals],
+      tasks: [...createdTasks, ...current.tasks]
+    }));
+    setNotice({ type: "success", message: "今週の計画を保存しました" });
+    setSelectedGoalLevel("weekly");
+    setTab("home");
+  }
+
+  async function saveTodayPlan(taskIds: string[], extraTitles: string[]) {
+    const selectedIds = new Set(taskIds);
+    const updatedTasks = data.tasks
+      .filter((task) => selectedIds.has(task.id))
+      .map((task) => ({
+        ...task,
+        due_date: today(),
+        urgent: task.urgent,
+        important: true,
+        status: task.status === "done" ? "todo" as const : task.status,
+        completed_at: task.status === "done" ? null : task.completed_at,
+        updated_at: now()
+      }));
+    const deferredWeeklyTasks = weeklyPlanTasks
+      .filter((task) => task.due_date === today() && !selectedIds.has(task.id))
+      .map((task) => ({
+        ...task,
+        due_date: currentWeek.weekEnd,
+        important: false,
+        updated_at: now()
+      }));
+    const extraTasks: Task[] = extraTitles
+      .map((title) => title.trim())
+      .filter(Boolean)
+      .slice(0, 10)
+      .map((title) => {
+        const parent = homeWeeklyGoals[0];
+        return {
+          id: crypto.randomUUID(),
+          user_id: userId,
+          dream_id: parent?.dream_id ?? null,
+          goal_id: parent?.id ?? null,
+          title,
+          memo: "",
+          due_date: today(),
+          urgent: false,
+          important: true,
+          status: "todo",
+          completed_at: null,
+          reschedule_count: 0,
+          last_rescheduled_at: null,
+          rescheduled_from: null,
+          rescheduled_to: null,
+          reschedule_history: [],
+          recurrence_type: "none",
+          recurrence_weekdays: [],
+          recurrence_day_of_month: null,
+          recurrence_start_date: null,
+          recurrence_active: false,
+          created_at: now(),
+          updated_at: now()
+        } satisfies Task;
+      });
+    if (updatedTasks.length === 0 && extraTasks.length === 0) {
+      setNotice({ type: "error", message: "今日やることを1件以上選ぶか追加してください。" });
+      return;
+    }
+    for (const task of [...updatedTasks, ...deferredWeeklyTasks]) {
+      const saved = await persist("tasks", task);
+      if (!saved) return;
+    }
+    for (const task of extraTasks) {
+      const saved = await persist("tasks", task);
+      if (!saved) return;
+    }
+    setData((current) => ({
+      ...current,
+      tasks: [
+        ...extraTasks,
+        ...current.tasks.map((task) => [...updatedTasks, ...deferredWeeklyTasks].find((updated) => updated.id === task.id) ?? task)
+      ]
+    }));
+    setNotice({ type: "success", message: "今日の計画を保存しました" });
+    setTab("home");
   }
 
   async function saveTask(event: FormEvent<HTMLFormElement>) {
@@ -2262,21 +2507,37 @@ export default function App() {
       {tab === "home" && (
         <section className="space-y-4">
           <MotivationCardStrip cards={visibleMotivationCards} startIndex={motivationCardIndex} onEdit={() => setTab("settings")} />
+          <HomeCycleGuide
+            yearGoals={homeYearGoals}
+            monthlyGoals={homeMonthlyGoals}
+            weeklyGoals={homeWeeklyGoals}
+            onCreateYear={() => {
+              setSelectedGoalLevel("one_year");
+              setEditingGoalId(null);
+              setGoalDraft({ level: "one_year", status: "todo", deadline: currentYear.yearEnd });
+              setTab("goals");
+            }}
+            onCreateMonth={() => {
+              setSelectedGoalLevel("monthly");
+              setEditingGoalId(null);
+              setGoalDraft({ level: "monthly", status: "todo", deadline: currentMonth.monthEnd });
+              setTab("goals");
+            }}
+            onCreateWeek={() => {
+              setTab("weekPlan");
+            }}
+          />
           <HomeWeeklyGoalPanel
             weeklyGoals={homeWeeklyGoals}
+            monthlyGoals={homeMonthlyGoals}
             goals={data.goals}
             tasks={data.tasks}
             completionRecords={data.taskCompletionRecords}
+            onPlanWeek={() => setTab("weekPlan")}
             onOpenGoals={() => {
               setSelectedGoalLevel("weekly");
               setEditingGoalId(null);
               setGoalDraft(null);
-              setTab("goals");
-            }}
-            onEdit={() => {
-              setSelectedGoalLevel("weekly");
-              setEditingGoalId(homeWeeklyGoals[0]?.id ?? null);
-              setGoalDraft(homeWeeklyGoals[0] ? null : { level: "weekly", status: "todo" });
               setTab("goals");
             }}
           />
@@ -2287,7 +2548,10 @@ export default function App() {
               tasks={data.tasks}
               dreams={data.dreams}
               goals={data.goals}
+              weeklyGoals={homeWeeklyGoals}
               onComplete={completeTask}
+              onPlanToday={(task) => void planTaskForToday(task)}
+              onOpenTodayPlan={() => setTab("todayPlan")}
               onEdit={(task) => {
                 setTaskDraft(null);
                 setEditingTaskId(task.id);
@@ -2312,7 +2576,6 @@ export default function App() {
           <HomeGoalCarousel
             twentyYearGoals={homeTwentyYearGoals}
             tenYearGoals={homeTenYearGoals}
-            fiveYearGoals={homeFiveYearGoals}
             yearGoals={homeYearGoals}
             monthlyGoals={homeMonthlyGoals}
             goals={data.goals}
@@ -2322,9 +2585,33 @@ export default function App() {
             onOpenGoals={(level) => {
               setSelectedGoalLevel(level);
               setEditingGoalId(null);
-              setGoalDraft({ level, status: "todo" });
+              setGoalDraft({ level, status: "todo", deadline: defaultDeadlineForLevel(level, journalDate) });
               setTab("goals");
             }}
+          />
+        </section>
+      )}
+
+      {tab === "weekPlan" && (
+        <section className="space-y-4">
+          <WeeklyPlanScreen
+            monthlyGoals={homeMonthlyGoals}
+            weekStart={currentWeek.weekStart}
+            weekEnd={currentWeek.weekEnd}
+            onSave={(plans) => void saveWeeklyPlan(plans)}
+            onCancel={() => setTab("home")}
+          />
+        </section>
+      )}
+
+      {tab === "todayPlan" && (
+        <section className="space-y-4">
+          <TodayPlanScreen
+            weeklyGoals={homeWeeklyGoals}
+            weeklyTasks={weeklyPlanTasks}
+            journalDate={journalDate}
+            onSave={(taskIds, extraTitles) => void saveTodayPlan(taskIds, extraTitles)}
+            onCancel={() => setTab("home")}
           />
         </section>
       )}
@@ -2826,25 +3113,339 @@ function MotivationCardStrip({
   );
 }
 
+function WeeklyPlanScreen({
+  monthlyGoals,
+  weekStart,
+  weekEnd,
+  onSave,
+  onCancel
+}: {
+  monthlyGoals: Goal[];
+  weekStart: string;
+  weekEnd: string;
+  onSave: (plans: WeeklyPlanDraft[]) => void;
+  onCancel: () => void;
+}) {
+  const [plans, setPlans] = useState<WeeklyPlanDraft[]>([
+    { title: "", parentGoalId: monthlyGoals[0]?.id ?? "", tasks: [""] }
+  ]);
+
+  const updatePlan = (index: number, patch: Partial<WeeklyPlanDraft>) => {
+    setPlans((items) => items.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)));
+  };
+
+  const updateTask = (planIndex: number, taskIndex: number, value: string) => {
+    setPlans((items) =>
+      items.map((item, itemIndex) =>
+        itemIndex === planIndex
+          ? { ...item, tasks: item.tasks.map((task, currentTaskIndex) => (currentTaskIndex === taskIndex ? value : task)) }
+          : item
+      )
+    );
+  };
+
+  return (
+    <Panel title="今週の目標を決める" icon={ClipboardList}>
+      <div className="space-y-4">
+        <section className="rounded-2xl border border-leaf/25 bg-leaf/10 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-sm font-bold text-ink">今月の目標</p>
+            <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-moss">{monthlyGoals.length}件</span>
+          </div>
+          {monthlyGoals.length > 0 ? (
+            <div className="flex snap-x snap-mandatory gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {monthlyGoals.map((goal) => (
+                <article key={goal.id} className="min-w-[82%] snap-start rounded-xl bg-white p-3 sm:min-w-[18rem]">
+                  <p className="text-[11px] font-bold text-clay">{periodLabel(goal)}</p>
+                  <h3 className="mt-1 line-clamp-2 text-sm font-bold text-ink">{goal.title}</h3>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <Empty text="今月の目標は未設定です。先に今月目標を作ると、今週の逆算がしやすくなります。" />
+          )}
+        </section>
+
+        <section className="space-y-3">
+          <div>
+            <p className="text-sm font-bold text-ink">今週はどこまで進めますか？</p>
+            <p className="mt-1 text-xs font-semibold text-ink/55">
+              {weekStart}〜{weekEnd}
+            </p>
+          </div>
+          {plans.map((plan, index) => (
+            <article key={index} className="space-y-3 rounded-2xl border border-mist bg-white p-3 shadow-sm">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-bold text-moss">今週の目標 {index + 1}</p>
+                {plans.length > 1 && (
+                  <button type="button" className="mini-button" onClick={() => setPlans((items) => items.filter((_, itemIndex) => itemIndex !== index))}>
+                    削除
+                  </button>
+                )}
+              </div>
+              <input
+                value={plan.title}
+                onChange={(event) => updatePlan(index, { title: event.target.value })}
+                placeholder="例：新規営業を25件行う"
+                className="input"
+              />
+              <select
+                value={plan.parentGoalId}
+                onChange={(event) => updatePlan(index, { parentGoalId: event.target.value })}
+                className="input"
+                aria-label="つながる今月目標"
+              >
+                <option value="">今月目標と紐づけない</option>
+                {monthlyGoals.map((goal) => (
+                  <option key={goal.id} value={goal.id}>
+                    今月: {goal.title}
+                  </option>
+                ))}
+              </select>
+              <div className="space-y-2">
+                <p className="text-xs font-bold text-moss">この目標を達成するためのタスク</p>
+                {plan.tasks.map((task, taskIndex) => (
+                  <div key={taskIndex} className="flex items-center gap-2">
+                    <input
+                      value={task}
+                      onChange={(event) => updateTask(index, taskIndex, event.target.value)}
+                      placeholder={taskIndex === 0 ? "例：営業先を25件探す" : "例：営業メールを25件送る"}
+                      className="input"
+                    />
+                    <button
+                      type="button"
+                      className="mini-button shrink-0"
+                      onClick={() =>
+                        updatePlan(index, {
+                          tasks: plan.tasks.length === 1 ? [""] : plan.tasks.filter((_, currentTaskIndex) => currentTaskIndex !== taskIndex)
+                        })
+                      }
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+                <button type="button" className="secondary-button w-full" onClick={() => updatePlan(index, { tasks: [...plan.tasks, ""] })}>
+                  <Plus className="h-4 w-4" /> タスクを追加
+                </button>
+              </div>
+            </article>
+          ))}
+          <button
+            type="button"
+            className="secondary-button w-full"
+            onClick={() => setPlans((items) => [...items, { title: "", parentGoalId: monthlyGoals[0]?.id ?? "", tasks: [""] }])}
+          >
+            <Plus className="h-4 w-4" /> 目標を追加
+          </button>
+        </section>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button type="button" className="primary-button" onClick={() => onSave(plans)}>
+            今週の計画を保存
+          </button>
+          <button type="button" className="secondary-button" onClick={onCancel}>
+            ホームへ戻る
+          </button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function TodayPlanScreen({
+  weeklyGoals,
+  weeklyTasks,
+  journalDate,
+  onSave,
+  onCancel
+}: {
+  weeklyGoals: Goal[];
+  weeklyTasks: Task[];
+  journalDate: string;
+  onSave: (taskIds: string[], extraTitles: string[]) => void;
+  onCancel: () => void;
+}) {
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(
+    () => new Set(weeklyTasks.filter((task) => task.due_date === journalDate).map((task) => task.id))
+  );
+  const [extraTasks, setExtraTasks] = useState([""]);
+  const goalById = new Map(weeklyGoals.map((goal) => [goal.id, goal]));
+
+  const toggleTask = (taskId: string) => {
+    setSelectedTaskIds((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  };
+
+  return (
+    <Panel title="今日やることを決める" icon={ListChecks}>
+      <div className="space-y-4">
+        <section className="rounded-2xl border border-leaf/25 bg-leaf/10 p-3">
+          <p className="text-sm font-bold text-ink">今週の目標</p>
+          {weeklyGoals.length > 0 ? (
+            <ul className="mt-2 space-y-2 text-sm leading-6 text-ink/75">
+              {weeklyGoals.map((goal) => (
+                <li key={goal.id} className="rounded-xl bg-white px-3 py-2">
+                  {goal.title}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <Empty text="今週の目標がまだありません。先に今週の計画を決めると、今日やることを選びやすくなります。" />
+          )}
+        </section>
+
+        <section className="space-y-3">
+          <div>
+            <p className="text-sm font-bold text-ink">今日やることを選ぶ</p>
+            <p className="mt-1 text-xs font-semibold text-ink/55">{journalDate}</p>
+          </div>
+          {weeklyTasks.length > 0 ? (
+            weeklyTasks.map((task) => (
+              <label key={task.id} className="tap-highlight flex items-start gap-3 rounded-2xl border border-mist bg-white p-3 shadow-sm">
+                <input
+                  type="checkbox"
+                  checked={selectedTaskIds.has(task.id)}
+                  onChange={() => toggleTask(task.id)}
+                  className="mt-1 h-5 w-5 accent-[#667761]"
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-bold text-ink">{task.title}</span>
+                  <span className="mt-1 block text-xs text-moss">{goalById.get(task.goal_id ?? "")?.title ?? "今週目標"} / {dueLabel(task.due_date)}</span>
+                </span>
+              </label>
+            ))
+          ) : (
+            <Empty text="今週目標に紐づく未完了タスクはありません。今日だけのタスクを追加できます。" />
+          )}
+        </section>
+
+        <section className="space-y-2 rounded-2xl border border-mist bg-white p-3">
+          <p className="text-sm font-bold text-ink">今日だけのタスク</p>
+          {extraTasks.map((task, index) => (
+            <div key={index} className="flex items-center gap-2">
+              <input
+                value={task}
+                onChange={(event) => setExtraTasks((items) => items.map((item, itemIndex) => (itemIndex === index ? event.target.value : item)))}
+                placeholder={index === 0 ? "例：取引先へ電話" : "例：請求書を送る"}
+                className="input"
+              />
+              <button
+                type="button"
+                className="mini-button shrink-0"
+                onClick={() => setExtraTasks((items) => (items.length === 1 ? [""] : items.filter((_, itemIndex) => itemIndex !== index)))}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          <button type="button" className="secondary-button w-full" onClick={() => setExtraTasks((items) => [...items, ""])}>
+            <Plus className="h-4 w-4" /> 今日だけのタスクを追加
+          </button>
+        </section>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button type="button" className="primary-button" onClick={() => onSave(Array.from(selectedTaskIds), extraTasks)}>
+            今日の計画を保存
+          </button>
+          <button type="button" className="secondary-button" onClick={onCancel}>
+            ホームへ戻る
+          </button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function HomeCycleGuide({
+  yearGoals,
+  monthlyGoals,
+  weeklyGoals,
+  onCreateYear,
+  onCreateMonth,
+  onCreateWeek
+}: {
+  yearGoals: Goal[];
+  monthlyGoals: Goal[];
+  weeklyGoals: Goal[];
+  onCreateYear: () => void;
+  onCreateMonth: () => void;
+  onCreateWeek: () => void;
+}) {
+  const guide =
+    yearGoals.length === 0
+      ? {
+          title: "今年の目標を決めましょう",
+          body: "10年後・20年後の目標を見て、今年どこまで進むかを決めます。",
+          action: "今年の目標を決める",
+          onClick: onCreateYear
+        }
+      : monthlyGoals.length === 0
+        ? {
+            title: "今月の計画を立てましょう",
+            body: "今年の目標を確認して、今月達成することを決めます。",
+            action: "今月の目標を決める",
+            onClick: onCreateMonth
+          }
+        : weeklyGoals.length === 0
+          ? {
+              title: "新しい1週間が始まりました",
+              body: "今月の目標を確認して、今週どこまで進めるかを決めます。",
+              action: "今週の目標を決める",
+              onClick: onCreateWeek
+            }
+          : null;
+
+  if (!guide) return null;
+  return (
+    <section className="rounded-2xl border border-dawn/35 bg-dawn/15 p-3 shadow-soft">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="line-clamp-1 text-sm font-bold text-ink">{guide.title}</p>
+          <p className="mt-1 line-clamp-2 text-xs leading-5 text-ink/65">{guide.body}</p>
+        </div>
+        <button type="button" className="mini-button shrink-0 bg-white" onClick={guide.onClick}>
+          {guide.action}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function HomeWeeklyGoalPanel({
   weeklyGoals,
+  monthlyGoals,
   goals,
   tasks,
   completionRecords,
-  onOpenGoals,
-  onEdit
+  onPlanWeek,
+  onOpenGoals
 }: {
   weeklyGoals: Goal[];
+  monthlyGoals: Goal[];
   goals: Goal[];
   tasks: Task[];
   completionRecords: TaskCompletionRecord[];
+  onPlanWeek: () => void;
   onOpenGoals: () => void;
-  onEdit: () => void;
 }) {
   const primaryGoal = weeklyGoals[0];
   const progress = primaryGoal ? goalProgress(primaryGoal, goals, tasks, completionRecords) : null;
+  const monthlyContext = monthlyGoals[0];
   return (
-    <section className="rounded-2xl border border-leaf/25 bg-leaf/10 p-4 shadow-soft">
+    <section
+      role="button"
+      tabIndex={0}
+      onClick={onOpenGoals}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") onOpenGoals();
+      }}
+      className="tap-highlight rounded-2xl border border-leaf/25 bg-leaf/10 p-4 shadow-soft"
+    >
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white text-moss">
@@ -2859,17 +3460,27 @@ function HomeWeeklyGoalPanel({
           {primaryGoal ? dueLabel(primaryGoal.deadline) : "追加"}
         </span>
       </div>
-      <p className="mt-3 text-sm leading-6 text-ink/65">
+      {monthlyContext && (
+        <p className="mt-2 line-clamp-1 text-xs font-semibold text-moss">
+          今月から: {monthlyContext.title}
+        </p>
+      )}
+      <p className="mt-2 text-sm leading-6 text-ink/65">
         {primaryGoal
           ? `紐づくタスク ${progress?.childTasks.length ?? 0}件 / 下位目標 ${progress?.childGoals.length ?? 0}件`
           : "今月の目標を見ながら、今週やることを設定します。"}
       </p>
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <button type="button" className="primary-button" onClick={onOpenGoals}>
-          タスクを見る
-        </button>
-        <button type="button" className="secondary-button" onClick={onEdit}>
-          編集
+      <div className="mt-3 flex items-center justify-between gap-2 text-xs font-bold text-clay">
+        <span>タップして目標とタスクを見る</span>
+        <button
+          type="button"
+          className="mini-button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onPlanWeek();
+          }}
+        >
+          {primaryGoal ? "見直す" : "決める"}
         </button>
       </div>
     </section>
@@ -2999,7 +3610,10 @@ function HomeTodayPanel({
   tasks,
   dreams,
   goals,
+  weeklyGoals,
   onComplete,
+  onPlanToday,
+  onOpenTodayPlan,
   onEdit,
   onReschedule
 }: {
@@ -3008,7 +3622,10 @@ function HomeTodayPanel({
   tasks: Task[];
   dreams: Dream[];
   goals: Goal[];
+  weeklyGoals: Goal[];
   onComplete: (task: Task) => Promise<void>;
+  onPlanToday: (task: Task) => void;
+  onOpenTodayPlan: () => void;
   onEdit: (task: Task) => void;
   onReschedule: (task: Task) => void;
 }) {
@@ -3024,11 +3641,24 @@ function HomeTodayPanel({
   const orderedTasks = [...aiOrderedTasks, ...remainingTasks];
   const primaryTask = orderedTasks[0];
   const secondaryTasks = orderedTasks.slice(1, 5);
+  const weeklyGoalIds = new Set(weeklyGoals.map((goal) => goal.id));
+  const weeklyCandidateTasks = tasks
+    .filter((task) => task.status !== "done" && task.status !== "archived" && !isRecurringTask(task))
+    .filter((task) => task.goal_id && weeklyGoalIds.has(task.goal_id))
+    .filter((task) => task.due_date !== today())
+    .sort((a, b) => dateDistance(a.due_date) - dateDistance(b.due_date) || a.created_at.localeCompare(b.created_at))
+    .slice(0, 4);
 
   if (!primaryTask) {
     return (
       <div className="space-y-3">
         <Empty text="今日やる候補はまだありません。重要タスク、期限つきタスク、夢に紐づくタスクを追加してください。" />
+        <button type="button" className="primary-button w-full" onClick={onOpenTodayPlan}>
+          今日やることを決める
+        </button>
+        {weeklyCandidateTasks.length > 0 && (
+          <WeeklyTaskPicker tasks={weeklyCandidateTasks} goals={goalById} onPlanToday={onPlanToday} />
+        )}
       </div>
     );
   }
@@ -3086,6 +3716,10 @@ function HomeTodayPanel({
       </div>
       {renderTask(primaryTask, true)}
       {secondaryTasks.length > 0 && <div className="grid gap-2 lg:grid-cols-2">{secondaryTasks.map((task) => renderTask(task))}</div>}
+      {weeklyCandidateTasks.length > 0 && <WeeklyTaskPicker tasks={weeklyCandidateTasks} goals={goalById} onPlanToday={onPlanToday} />}
+      <button type="button" className="secondary-button w-full" onClick={onOpenTodayPlan}>
+        今日の計画を見直す
+      </button>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs leading-5 text-ink/55">
           {suggestion?.summary ?? "期限、重要度、夢・目標とのつながりから今日の候補を表示しています。"}
@@ -3095,10 +3729,43 @@ function HomeTodayPanel({
   );
 }
 
+function WeeklyTaskPicker({
+  tasks,
+  goals,
+  onPlanToday
+}: {
+  tasks: Task[];
+  goals: Map<string, Goal>;
+  onPlanToday: (task: Task) => void;
+}) {
+  return (
+    <section className="rounded-xl border border-dashed border-leaf/35 bg-leaf/5 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-sm font-bold text-ink">今週から今日へ選ぶ</p>
+        <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-moss">{tasks.length}件</span>
+      </div>
+      <div className="space-y-2">
+        {tasks.map((task) => (
+          <article key={task.id} className="flex items-center justify-between gap-3 rounded-lg bg-white p-3">
+            <div className="min-w-0">
+              <p className="line-clamp-1 text-sm font-bold text-ink">{task.title}</p>
+              <p className="mt-1 line-clamp-1 text-xs text-moss">
+                {goals.get(task.goal_id ?? "")?.title ?? "今週目標"} / {dueLabel(task.due_date)}
+              </p>
+            </div>
+            <button className="mini-button shrink-0 bg-ink text-white" onClick={() => onPlanToday(task)}>
+              今日へ
+            </button>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function HomeGoalCarousel({
   twentyYearGoals,
   tenYearGoals,
-  fiveYearGoals,
   yearGoals,
   monthlyGoals,
   goals,
@@ -3109,7 +3776,6 @@ function HomeGoalCarousel({
 }: {
   twentyYearGoals: Goal[];
   tenYearGoals: Goal[];
-  fiveYearGoals: Goal[];
   monthlyGoals: Goal[];
   yearGoals: Goal[];
   goals: Goal[];
@@ -3130,19 +3796,11 @@ function HomeGoalCarousel({
     },
     {
       key: "year",
-      period: "1年後",
+      period: "今年",
       icon: Target,
       level: "one_year" as GoalLevel,
       goals: yearGoals,
-      emptyText: "1年後の目標を登録"
-    },
-    {
-      key: "five-year",
-      period: "5年後",
-      icon: CalendarDays,
-      level: "five_year" as GoalLevel,
-      goals: fiveYearGoals,
-      emptyText: "5年後の目標を登録"
+      emptyText: "今年の目標を登録"
     },
     {
       key: "ten-year",
@@ -3172,6 +3830,8 @@ function HomeGoalCarousel({
         {cards.map((card) => {
           const goal = card.goals[0];
           const dream = goal ? dreamById.get(goal.dream_id ?? "") : undefined;
+          const progress = goal ? goalProgress(goal, goals, tasks, completionRecords) : null;
+          const childItems = progress ? [...progress.childGoals, ...progress.childTasks].slice(0, 3) : [];
           const Icon = card.icon;
           return (
             <button
@@ -3198,7 +3858,16 @@ function HomeGoalCarousel({
               <p className="mt-1 line-clamp-1 text-[11px] text-ink/50">
                 {goal ? `関連：${dream?.title ?? "未紐づけ"}` : "タップして追加"}
               </p>
-              <p className="mt-3 text-[11px] font-bold text-clay">詳細を見る</p>
+              {childItems.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {childItems.map((item) => (
+                    <p key={item.id} className="line-clamp-1 text-[11px] text-ink/60">
+                      - {item.title}
+                    </p>
+                  ))}
+                </div>
+              )}
+              <p className="mt-2 text-[11px] font-bold text-clay">詳細を見る</p>
               {card.goals.length > 1 && <p className="mt-1 text-[11px] font-semibold text-moss">他 {card.goals.length - 1} 件</p>}
             </button>
           );
@@ -3961,16 +4630,16 @@ function GoalForm({
       .filter((candidate) => candidate.id !== goal?.id)
       .filter((candidate) => !filterText || candidate.title.toLowerCase().includes(filterText))
       .slice(0, 4)
-      .map((candidate) => `目標: ${candidate.title}`),
+      .map((candidate) => ({ key: `goal-${candidate.id}`, label: `目標: ${candidate.title}` })),
     ...tasks
       .filter((task) => !filterText || task.title.toLowerCase().includes(filterText))
       .slice(0, 4)
-      .map((task) => `タスク: ${task.title}`),
+      .map((task) => ({ key: `task-${task.id}`, label: `タスク: ${task.title}` })),
     ...inbox
       .filter((item) => item.status !== "archived")
       .filter((item) => !filterText || `${item.title} ${item.memo}`.toLowerCase().includes(filterText))
       .slice(0, 4)
-      .map((item) => `メモ: ${item.title}`)
+      .map((item) => ({ key: `inbox-${item.id}`, label: `メモ: ${item.title}` }))
   ].slice(0, 6);
   const contextGoals = selectedLevel === "weekly"
     ? goals.filter((candidate) => candidate.level === "monthly" && candidate.status !== "archived").sort(sortGoalsByPlan).slice(0, 5)
@@ -4106,8 +4775,8 @@ function GoalForm({
             {relatedPreviewItems.length > 0 && (
               <div className="mt-2 grid gap-1 text-xs leading-5 text-ink/60">
                 {relatedPreviewItems.map((item) => (
-                  <span key={item} className="truncate rounded-md bg-mist px-2 py-1">
-                    {item}
+                  <span key={item.key} className="truncate rounded-md bg-mist px-2 py-1">
+                    {item.label}
                   </span>
                 ))}
               </div>
@@ -4148,9 +4817,10 @@ function GoalPlanFlow({
 }) {
   const dreamById = new Map(dreams.map((dream) => [dream.id, dream]));
   const goalById = new Map(goals.map((goal) => [goal.id, goal]));
-  const activeNewGoals = goals.filter((goal) => (newGoalLevels as readonly string[]).includes(goal.level)).sort(sortGoalsByPlan);
-  const legacyGoals = goals.filter((goal) => (legacyGoalLevels as readonly string[]).includes(goal.level)).sort(sortGoalsByPlan);
-  const visibleLevels = selectedLevel ? [selectedLevel] : homeGoalLevels;
+  const activeNewGoals = goals.filter((goal) => (newGoalLevels as readonly string[]).includes(goal.level) && !isPastPeriodGoal(goal)).sort(sortGoalsByPlan);
+  const pastGoals = goals.filter((goal) => isPastPeriodGoal(goal)).sort(sortGoalsByPlan);
+  const compatibilityGoals = goals.filter((goal) => goal.level === "five_year" || (legacyGoalLevels as readonly string[]).includes(goal.level)).sort(sortGoalsByPlan);
+  const visibleLevels = selectedLevel ? [selectedLevel] : operationalGoalLevels;
 
   return (
     <div className="space-y-3">
@@ -4162,7 +4832,7 @@ function GoalPlanFlow({
         >
           すべて
         </button>
-        {homeGoalLevels.map((level) => (
+        {operationalGoalLevels.map((level) => (
           <button
             key={level}
             type="button"
@@ -4205,15 +4875,41 @@ function GoalPlanFlow({
           </section>
         );
       })}
-      {!selectedLevel && legacyGoals.length > 0 && (
+      {!selectedLevel && pastGoals.length > 0 && (
+        <section className="rounded-lg border border-dashed border-leaf/40 bg-white p-3">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h3 className="font-bold text-moss">過去の期間計画</h3>
+            <span className="rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">{pastGoals.length}</span>
+          </div>
+          <p className="mb-3 text-xs leading-5 text-ink/60">前年・前月・前週の計画です。新しい期間の計画を作っても履歴として残します。</p>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {pastGoals.map((goal) => (
+              <GoalCard
+                key={goal.id}
+                goal={goal}
+                dream={dreamById.get(goal.dream_id ?? "")}
+                parentGoal={goalById.get(parentGoalId(goal) ?? "")}
+                goals={goals}
+                tasks={tasks}
+                completionRecords={completionRecords}
+                onEdit={() => onEdit(goal)}
+                onArchive={() => onArchive(goal)}
+                onDelete={() => onDelete(goal)}
+                onDecompose={() => onDecompose(goal)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+      {!selectedLevel && compatibilityGoals.length > 0 && (
         <section className="rounded-lg border border-dashed border-clay/40 bg-white p-3">
           <div className="mb-3 flex items-center justify-between gap-2">
-            <h3 className="font-bold text-clay">旧階層</h3>
-            <span className="rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">{legacyGoals.length}</span>
+            <h3 className="font-bold text-clay">互換階層</h3>
+            <span className="rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">{compatibilityGoals.length}</span>
           </div>
-          <p className="mb-3 text-xs leading-5 text-ink/60">旧10年・旧3年の目標です。データは残し、編集時に新しい階層へ移せます。</p>
+          <p className="mb-3 text-xs leading-5 text-ink/60">5年・旧3年・旧今日の目標です。データは残し、編集時に現在の主軸へ移せます。</p>
           <div className="grid gap-3 lg:grid-cols-2">
-            {legacyGoals.map((goal) => (
+            {compatibilityGoals.map((goal) => (
               <GoalCard
                 key={goal.id}
                 goal={goal}
@@ -4269,7 +4965,7 @@ function GoalCard({
           <p className="text-xs font-bold text-clay">{goalLabels[goal.level]}</p>
           <h3 className="mt-1 font-bold text-ink">{done ? <RedPenText>{goal.title}</RedPenText> : goal.title}</h3>
         </div>
-        <span className="shrink-0 rounded-full bg-mist px-2 py-1 text-xs font-semibold text-moss">{goal.deadline || "期限未設定"}</span>
+        <span className="shrink-0 rounded-full bg-mist px-2 py-1 text-xs font-semibold text-moss">{periodLabel(goal)}</span>
       </div>
       {goal.description && <p className="mt-2 text-sm leading-6 text-ink/70">{goal.description}</p>}
       <p className="mt-3 text-xs text-moss">6本の柱：{pillar}</p>
