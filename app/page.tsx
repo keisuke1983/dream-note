@@ -116,6 +116,18 @@ type TaskCompletionRecord = {
   updated_at: string;
 };
 
+type Appointment = {
+  id: string;
+  user_id: string;
+  title: string;
+  date: string;
+  start_time: string;
+  end_time: string | null;
+  memo: string;
+  created_at: string;
+  updated_at: string;
+};
+
 type MotivationCard = {
   id: string;
   user_id: string;
@@ -208,6 +220,7 @@ type AppData = {
   weeklyAiReviews: WeeklyAiReviewRecord[];
   reflections: Reflection[];
   taskCompletionRecords: TaskCompletionRecord[];
+  appointments: Appointment[];
   motivationCards: MotivationCard[];
   profile: Profile;
 };
@@ -228,8 +241,10 @@ type CollectionKey =
   | "weeklyAiReviews"
   | "reflections"
   | "taskCompletionRecords"
+  | "appointments"
   | "motivationCards";
 type Tab = "home" | "dreams" | "goals" | "tasks" | "matrix" | "inbox" | "reflect" | "settings" | "weekPlan" | "todayPlan";
+type DiaryView = "daily" | "weekly" | "monthly" | "yearly";
 type Notice = { type: "success" | "error"; message: string; actionLabel?: string; onAction?: () => void };
 type GoalLevel = "twenty_year" | "ten_year" | "five_year" | "one_year" | "monthly" | "weekly" | "daily" | "three_year";
 
@@ -421,6 +436,7 @@ const initialData = (): AppData => ({
   weeklyAiReviews: [],
   reflections: [],
   taskCompletionRecords: [],
+  appointments: [],
   motivationCards: []
 });
 
@@ -462,6 +478,7 @@ function getStoredData() {
       weeklyAiReviews: parsed.weeklyAiReviews ?? [],
       reflections: parsed.reflections ?? [],
       taskCompletionRecords: parsed.taskCompletionRecords ?? [],
+      appointments: parsed.appointments ?? [],
       motivationCards: parsed.motivationCards ?? [],
       profile: { ...base.profile, ...parsed.profile }
     } satisfies AppData;
@@ -719,6 +736,7 @@ function sanitizeForDatabase<T extends Record<string, unknown>>(record: T) {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("home");
+  const [diaryView, setDiaryView] = useState<DiaryView>("daily");
   const [data, setData] = useState<AppData>(initialData);
   const [loaded, setLoaded] = useState(false);
   const [user, setUser] = useState<User | null>(null);
@@ -850,6 +868,7 @@ export default function App() {
         weeklyAiReviews,
         reflections,
         taskCompletionRecords,
+        appointments,
         motivationCards,
         profiles
       ] = await Promise.all([
@@ -862,6 +881,7 @@ export default function App() {
         supabase.from("weekly_ai_reviews").select("*").eq("user_id", activeUserId).order("created_at", { ascending: false }),
         supabase.from("daily_reflections").select("*").eq("user_id", activeUserId).order("reflection_date", { ascending: false }),
         supabase.from("task_completion_records").select("*").eq("user_id", activeUserId).order("completed_at", { ascending: false }),
+        supabase.from("appointments").select("*").eq("user_id", activeUserId).order("date", { ascending: true }).order("start_time", { ascending: true }),
         supabase.from("motivation_cards").select("*").eq("user_id", activeUserId).order("sort_order", { ascending: true }),
         supabase.from("profiles").select("*").eq("user_id", activeUserId).maybeSingle()
       ]);
@@ -875,6 +895,7 @@ export default function App() {
         weeklyAiReviews,
         reflections,
         taskCompletionRecords,
+        appointments,
         motivationCards,
         profiles
       ].find((result) => result.error)?.error;
@@ -891,6 +912,7 @@ export default function App() {
         weeklyAiReviews: (weeklyAiReviews.data ?? []) as WeeklyAiReviewRecord[],
         reflections: (reflections.data ?? []) as Reflection[],
         taskCompletionRecords: (taskCompletionRecords.data ?? []) as TaskCompletionRecord[],
+        appointments: (appointments.data ?? []) as Appointment[],
         motivationCards: (motivationCards.data ?? []) as MotivationCard[],
         profile:
           ((profiles.data as Profile | null) ??
@@ -1123,6 +1145,38 @@ export default function App() {
     [activeGoals, currentYear.yearEnd, currentYear.yearStart]
   );
 
+  const yearGoals = useMemo(
+    () =>
+      activeGoals
+        .filter((goal) => goalInPeriod(goal, "one_year", currentYear.yearStart, currentYear.yearEnd))
+        .sort((a, b) => dateDistanceFrom(a.deadline, journalDate) - dateDistanceFrom(b.deadline, journalDate)),
+    [activeGoals, currentYear.yearEnd, currentYear.yearStart, journalDate]
+  );
+
+  const todayAppointments = useMemo(
+    () =>
+      data.appointments
+        .filter((appointment) => appointment.date === journalDate)
+        .sort((a, b) => a.start_time.localeCompare(b.start_time)),
+    [data.appointments, journalDate]
+  );
+
+  const monthlyAppointments = useMemo(
+    () =>
+      data.appointments
+        .filter((appointment) => appointment.date >= currentMonth.monthStart && appointment.date <= currentMonth.monthEnd)
+        .sort((a, b) => a.date.localeCompare(b.date) || a.start_time.localeCompare(b.start_time)),
+    [data.appointments, currentMonth.monthEnd, currentMonth.monthStart]
+  );
+
+  const weeklyAppointments = useMemo(
+    () =>
+      data.appointments
+        .filter((appointment) => appointment.date >= currentWeek.weekStart && appointment.date <= currentWeek.weekEnd)
+        .sort((a, b) => a.date.localeCompare(b.date) || a.start_time.localeCompare(b.start_time)),
+    [data.appointments, currentWeek.weekEnd, currentWeek.weekStart]
+  );
+
   const visibleMotivationCards = useMemo(
     () => data.motivationCards.filter((card) => card.visible).sort((a, b) => a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at)),
     [data.motivationCards]
@@ -1248,7 +1302,7 @@ export default function App() {
     [currentWeek.weekStart, data.weeklyAiReviews, weeklyReviewContextHash]
   );
 
-  const todayReflection = data.reflections.find((reflection) => reflection.reflection_date === today());
+  const todayReflection = data.reflections.find((reflection) => reflection.reflection_date === journalDate);
   const selectedSuggestion = data.aiSuggestions.find((suggestion) => suggestion.id === selectedSuggestionId);
 
   async function login(event: FormEvent<HTMLFormElement>) {
@@ -1264,6 +1318,67 @@ export default function App() {
   async function logout() {
     if (supabase) await supabase.auth.signOut();
     setUser(null);
+  }
+
+  function moveDiaryDate(nextDate: string) {
+    if (typeof window !== "undefined") window.localStorage.setItem(journalDateKey, nextDate);
+    setJournalDate(nextDate);
+  }
+
+  async function saveAppointment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const date = normalizeDate(form.get("date"));
+    if (date === "invalid" || !date) {
+      setNotice({ type: "error", message: "予定の日付は YYYY-MM-DD 形式で入力してください。" });
+      return;
+    }
+    const title = String(form.get("title") ?? "").trim();
+    const startTime = String(form.get("start_time") ?? "").trim();
+    const endTime = String(form.get("end_time") ?? "").trim();
+    if (!title || !startTime) {
+      setNotice({ type: "error", message: "予定名と開始時刻を入力してください。" });
+      return;
+    }
+    const appointment: Appointment = {
+      id: crypto.randomUUID(),
+      user_id: userId,
+      title,
+      date,
+      start_time: startTime,
+      end_time: endTime || null,
+      memo: String(form.get("memo") ?? ""),
+      created_at: now(),
+      updated_at: now()
+    };
+    const saved = await persist("appointments", appointment);
+    if (!saved) return;
+    upsertLocal("appointments", appointment);
+    event.currentTarget.reset();
+    setNotice({ type: "success", message: "保存しました" });
+  }
+
+  async function saveDailyDiaryNote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const reflection: Reflection = {
+      id: todayReflection?.id ?? crypto.randomUUID(),
+      user_id: userId,
+      reflection_date: journalDate,
+      done_text: todayCompletionRecords.map((record) => record.title_snapshot).join("\n"),
+      not_done_text: todayReflection?.not_done_text ?? "",
+      dream_progress_text: String(form.get("memo") ?? ""),
+      tomorrow_text: todayReflection?.tomorrow_text ?? "",
+      insight_text: String(form.get("insight_text") ?? ""),
+      satisfaction_score: todayReflection?.satisfaction_score ?? 3,
+      created_at: todayReflection?.created_at ?? now(),
+      updated_at: now()
+    };
+    const saved = await persist("daily_reflections", reflection);
+    if (!saved) return;
+    upsertLocal("reflections", reflection);
+    setReflectionDirty(false);
+    setNotice({ type: "success", message: "保存しました" });
   }
 
   async function saveDream(event: FormEvent<HTMLFormElement>) {
@@ -1357,7 +1472,7 @@ export default function App() {
             goal_id: goal.id,
             title,
             memo: "",
-            due_date: today(),
+            due_date: journalDate,
             urgent: false,
             important: true,
             status: "todo",
@@ -1407,7 +1522,7 @@ export default function App() {
   async function planTaskForToday(task: Task) {
     const updated: Task = {
       ...task,
-      due_date: today(),
+      due_date: journalDate,
       status: task.status === "done" ? "todo" : task.status,
       completed_at: task.status === "done" ? null : task.completed_at,
       updated_at: now()
@@ -1504,7 +1619,7 @@ export default function App() {
       .filter((task) => selectedIds.has(task.id))
       .map((task) => ({
         ...task,
-        due_date: today(),
+        due_date: journalDate,
         urgent: task.urgent,
         important: true,
         status: task.status === "done" ? "todo" as const : task.status,
@@ -1512,7 +1627,7 @@ export default function App() {
         updated_at: now()
       }));
     const deferredWeeklyTasks = weeklyPlanTasks
-      .filter((task) => task.due_date === today() && !selectedIds.has(task.id))
+      .filter((task) => task.due_date === journalDate && !selectedIds.has(task.id))
       .map((task) => ({
         ...task,
         due_date: currentWeek.weekEnd,
@@ -1532,7 +1647,7 @@ export default function App() {
           goal_id: parent?.id ?? null,
           title,
           memo: "",
-          due_date: today(),
+          due_date: journalDate,
           urgent: false,
           important: true,
           status: "todo",
@@ -2369,7 +2484,7 @@ export default function App() {
     const reflection: Reflection = {
       id: todayReflection?.id ?? crypto.randomUUID(),
       user_id: userId,
-      reflection_date: today(),
+      reflection_date: journalDate,
       done_text: String(form.get("done_text") ?? ""),
       not_done_text: "",
       dream_progress_text: "",
@@ -2386,7 +2501,7 @@ export default function App() {
       goal_id: null,
       title,
       memo: "振り返りから追加",
-      due_date: addDays(today(), 1),
+      due_date: addDays(journalDate, 1),
       urgent: false,
       important: true,
       status: "todo",
@@ -2488,12 +2603,12 @@ export default function App() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 pb-24 pt-5 lg:pl-64 lg:pr-8">
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col overflow-x-hidden px-4 pb-24 pt-5 lg:pl-64 lg:pr-8">
       <header className="mb-5 flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-moss">AI Dream Note</p>
         </div>
-        <div className="rounded-full bg-white/80 px-3 py-2 text-right text-xs font-semibold text-moss shadow-soft">{today()}</div>
+        <div className="hidden rounded-full bg-white/80 px-3 py-2 text-right text-xs font-semibold text-moss shadow-soft sm:block">{today()}</div>
       </header>
 
       {!hasSupabaseConfig && (
@@ -2506,89 +2621,102 @@ export default function App() {
 
       {tab === "home" && (
         <section className="space-y-4">
-          <MotivationCardStrip cards={visibleMotivationCards} startIndex={motivationCardIndex} onEdit={() => setTab("settings")} />
-          <HomeCycleGuide
-            yearGoals={homeYearGoals}
-            monthlyGoals={homeMonthlyGoals}
-            weeklyGoals={homeWeeklyGoals}
-            onCreateYear={() => {
-              setSelectedGoalLevel("one_year");
-              setEditingGoalId(null);
-              setGoalDraft({ level: "one_year", status: "todo", deadline: currentYear.yearEnd });
-              setTab("goals");
-            }}
-            onCreateMonth={() => {
-              setSelectedGoalLevel("monthly");
-              setEditingGoalId(null);
-              setGoalDraft({ level: "monthly", status: "todo", deadline: currentMonth.monthEnd });
-              setTab("goals");
-            }}
-            onCreateWeek={() => {
-              setTab("weekPlan");
-            }}
-          />
-          <HomeWeeklyGoalPanel
-            weeklyGoals={homeWeeklyGoals}
-            monthlyGoals={homeMonthlyGoals}
-            goals={data.goals}
-            tasks={data.tasks}
-            completionRecords={data.taskCompletionRecords}
-            onPlanWeek={() => setTab("weekPlan")}
-            onOpenGoals={() => {
-              setSelectedGoalLevel("weekly");
-              setEditingGoalId(null);
-              setGoalDraft(null);
-              setTab("goals");
-            }}
-          />
-          <Panel title="今日やること" icon={ListChecks}>
-            <HomeTodayPanel
-              suggestion={todayAiSuggestion?.output_json}
+          <DiaryTabs view={diaryView} onChange={setDiaryView} />
+          {diaryView === "daily" && (
+            <DailyDiaryPage
+              journalDate={journalDate}
+              weeklyGoals={homeWeeklyGoals}
+              monthlyGoals={homeMonthlyGoals}
+              motivationCards={visibleMotivationCards}
+              motivationCardIndex={motivationCardIndex}
+              appointments={todayAppointments}
+              reflection={todayReflection}
+              todayCompletionRecords={todayCompletionRecords}
               todayTasks={todayTasks}
               tasks={data.tasks}
               dreams={data.dreams}
               goals={data.goals}
-              weeklyGoals={homeWeeklyGoals}
+              suggestion={todayAiSuggestion?.output_json}
+              onMoveDate={moveDiaryDate}
+              onEditMotivation={() => setTab("settings")}
+              onSaveAppointment={saveAppointment}
+              onSaveNote={saveDailyDiaryNote}
               onComplete={completeTask}
               onPlanToday={(task) => void planTaskForToday(task)}
               onOpenTodayPlan={() => setTab("todayPlan")}
-              onEdit={(task) => {
+              onOpenWeekPlan={() => setTab("weekPlan")}
+              onEditTask={(task) => {
                 setTaskDraft(null);
                 setEditingTaskId(task.id);
                 setTab("tasks");
               }}
-              onReschedule={(task) => setReschedulingTaskId(task.id)}
+              onRescheduleTask={(task) => setReschedulingTaskId(task.id)}
+              onUndo={(record) => void undoTaskCompletion(record)}
+              onUpdateTime={(record, timeValue) => void updateCompletionTime(record, timeValue)}
+              onRolloverRequest={() => {
+                if (reflectionDirty && !window.confirm("未保存の振り返りがあります。保存せずに翌日切り替えへ進みますか？")) return;
+                setRolloverOpen(true);
+              }}
             />
-          </Panel>
-          <TodayCompletedPanel
-            records={todayCompletionRecords}
-            tasks={data.tasks}
-            dreams={data.dreams}
-            goals={data.goals}
-            onUndo={(record) => void undoTaskCompletion(record)}
-            onEditTask={(task) => {
-              setTaskDraft(null);
-              setEditingTaskId(task.id);
-              setTab("tasks");
-            }}
-            onUpdateTime={(record, timeValue) => void updateCompletionTime(record, timeValue)}
-          />
-          <HomeGoalCarousel
-            twentyYearGoals={homeTwentyYearGoals}
-            tenYearGoals={homeTenYearGoals}
-            yearGoals={homeYearGoals}
-            monthlyGoals={homeMonthlyGoals}
-            goals={data.goals}
-            tasks={data.tasks}
-            completionRecords={data.taskCompletionRecords}
-            dreams={data.dreams}
-            onOpenGoals={(level) => {
-              setSelectedGoalLevel(level);
-              setEditingGoalId(null);
-              setGoalDraft({ level, status: "todo", deadline: defaultDeadlineForLevel(level, journalDate) });
-              setTab("goals");
-            }}
-          />
+          )}
+          {diaryView === "weekly" && (
+            <WeeklyDiaryPage
+              weekStart={currentWeek.weekStart}
+              weekEnd={currentWeek.weekEnd}
+              monthlyGoals={homeMonthlyGoals}
+              weeklyGoals={homeWeeklyGoals}
+              tasks={data.tasks}
+              appointments={weeklyAppointments}
+              completionRecords={data.taskCompletionRecords}
+              onOpenWeekPlan={() => setTab("weekPlan")}
+              onOpenDay={(date) => {
+                moveDiaryDate(date);
+                setDiaryView("daily");
+              }}
+            />
+          )}
+          {diaryView === "monthly" && (
+            <MonthlyDiaryPage
+              journalDate={journalDate}
+              yearGoals={yearGoals}
+              monthlyGoals={homeMonthlyGoals}
+              tasks={data.tasks}
+              appointments={monthlyAppointments}
+              monthStart={currentMonth.monthStart}
+              monthEnd={currentMonth.monthEnd}
+              onCreateMonth={() => {
+                setSelectedGoalLevel("monthly");
+                setEditingGoalId(null);
+                setGoalDraft({ level: "monthly", status: "todo", deadline: currentMonth.monthEnd });
+                setTab("goals");
+              }}
+              onOpenDay={(date) => {
+                moveDiaryDate(date);
+                setDiaryView("daily");
+              }}
+            />
+          )}
+          {diaryView === "yearly" && (
+            <YearlyDiaryPage
+              journalDate={journalDate}
+              dreams={data.dreams}
+              twentyYearGoals={homeTwentyYearGoals}
+              tenYearGoals={homeTenYearGoals}
+              yearGoals={yearGoals}
+              monthlyGoals={activeGoals.filter((goal) => goal.level === "monthly")}
+              appointments={data.appointments}
+              onOpenMonth={(date) => {
+                moveDiaryDate(date);
+                setDiaryView("monthly");
+              }}
+              onCreateYear={() => {
+                setSelectedGoalLevel("one_year");
+                setEditingGoalId(null);
+                setGoalDraft({ level: "one_year", status: "todo", deadline: currentYear.yearEnd });
+                setTab("goals");
+              }}
+            />
+          )}
         </section>
       )}
 
@@ -2906,6 +3034,456 @@ export default function App() {
         </div>
       </nav>
     </main>
+  );
+}
+
+function DiaryTabs({ view, onChange }: { view: DiaryView; onChange: (view: DiaryView) => void }) {
+  const items: Array<{ key: DiaryView; label: string }> = [
+    { key: "daily", label: "今日" },
+    { key: "weekly", label: "週間" },
+    { key: "monthly", label: "月間" },
+    { key: "yearly", label: "年間" }
+  ];
+  return (
+    <div className="sticky top-0 z-10 -mx-1 rounded-2xl bg-paper/90 p-1 backdrop-blur">
+      <div className="grid grid-cols-4 gap-1 rounded-2xl border border-mist bg-white/80 p-1 shadow-sm">
+        {items.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => onChange(item.key)}
+            className={`min-h-11 rounded-xl text-sm font-bold ${view === item.key ? "bg-ink text-white" : "text-ink/65"}`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function journalDateLabel(date: string) {
+  const value = new Date(`${date}T00:00:00`);
+  return `${value.getFullYear()}年${value.getMonth() + 1}月${value.getDate()}日（${"日月火水木金土"[value.getDay()]}）`;
+}
+
+function monthTitle(date: string) {
+  const value = new Date(`${date}T00:00:00`);
+  return `${value.getFullYear()}年${value.getMonth() + 1}月`;
+}
+
+function sameMonth(date: string, baseDate: string) {
+  return date.slice(0, 7) === baseDate.slice(0, 7);
+}
+
+function monthDates(monthStart: string, monthEnd: string) {
+  const dates: string[] = [];
+  let current = monthStart;
+  while (current <= monthEnd) {
+    dates.push(current);
+    current = addDays(current, 1);
+  }
+  return dates;
+}
+
+function DatePager({
+  date,
+  onMoveDate
+}: {
+  date: string;
+  onMoveDate: (date: string) => void;
+}) {
+  return (
+    <section className="rounded-2xl border border-white/80 bg-white/88 p-3 shadow-soft">
+      <div className="text-center">
+        <p className="text-xs font-bold text-moss">今日の手帳</p>
+        <h1 className="mt-1 line-clamp-1 text-xl font-bold text-ink">{journalDateLabel(date)}</h1>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <button type="button" className="mini-button min-h-11 px-2" onClick={() => onMoveDate(addDays(date, -1))}>
+          前日
+        </button>
+        <button type="button" className="mini-button min-h-11 px-2" onClick={() => onMoveDate(systemJournalDate())}>
+          今日
+        </button>
+        <button type="button" className="mini-button min-h-11 px-2" onClick={() => onMoveDate(addDays(date, 1))}>
+          翌日
+        </button>
+      </div>
+      <div className="mt-2">
+        <input type="date" value={date} onChange={(event) => onMoveDate(event.target.value)} className="input min-h-11 py-2 text-sm" />
+      </div>
+    </section>
+  );
+}
+
+function DailyDiaryPage({
+  journalDate,
+  weeklyGoals,
+  monthlyGoals,
+  motivationCards,
+  motivationCardIndex,
+  appointments,
+  reflection,
+  todayCompletionRecords,
+  todayTasks,
+  tasks,
+  dreams,
+  goals,
+  suggestion,
+  onMoveDate,
+  onEditMotivation,
+  onSaveAppointment,
+  onSaveNote,
+  onComplete,
+  onPlanToday,
+  onOpenTodayPlan,
+  onOpenWeekPlan,
+  onEditTask,
+  onRescheduleTask,
+  onUndo,
+  onUpdateTime,
+  onRolloverRequest
+}: {
+  journalDate: string;
+  weeklyGoals: Goal[];
+  monthlyGoals: Goal[];
+  motivationCards: MotivationCard[];
+  motivationCardIndex: number;
+  appointments: Appointment[];
+  reflection?: Reflection;
+  todayCompletionRecords: TaskCompletionRecord[];
+  todayTasks: Task[];
+  tasks: Task[];
+  dreams: Dream[];
+  goals: Goal[];
+  suggestion?: TodayAiSuggestionOutput;
+  onMoveDate: (date: string) => void;
+  onEditMotivation: () => void;
+  onSaveAppointment: (event: FormEvent<HTMLFormElement>) => void;
+  onSaveNote: (event: FormEvent<HTMLFormElement>) => void;
+  onComplete: (task: Task) => Promise<void>;
+  onPlanToday: (task: Task) => void;
+  onOpenTodayPlan: () => void;
+  onOpenWeekPlan: () => void;
+  onEditTask: (task: Task) => void;
+  onRescheduleTask: (task: Task) => void;
+  onUndo: (record: TaskCompletionRecord) => void;
+  onUpdateTime: (record: TaskCompletionRecord, timeValue: string) => void;
+  onRolloverRequest: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <DatePager date={journalDate} onMoveDate={onMoveDate} />
+      <MotivationCardStrip cards={motivationCards} startIndex={motivationCardIndex} onEdit={onEditMotivation} />
+      <section className="rounded-2xl border border-leaf/25 bg-leaf/10 p-3 shadow-soft">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-moss">今週の目標</p>
+            <h2 className="mt-1 line-clamp-2 text-base font-bold text-ink">{weeklyGoals[0]?.title ?? "今週の目標を決める"}</h2>
+            {monthlyGoals[0] && <p className="mt-1 line-clamp-1 text-xs text-moss">今月: {monthlyGoals[0].title}</p>}
+          </div>
+          <button type="button" className="mini-button shrink-0" onClick={onOpenWeekPlan}>
+            {weeklyGoals.length > 0 ? "見直す" : "決める"}
+          </button>
+        </div>
+      </section>
+
+      <Panel title="今日の予定" icon={CalendarDays}>
+        <div className="space-y-3">
+          {appointments.length > 0 ? (
+            <div className="space-y-2">
+              {appointments.map((appointment) => (
+                <article key={appointment.id} className="rounded-xl bg-mist/60 p-3">
+                  <p className="text-xs font-bold text-moss">
+                    {appointment.start_time}
+                    {appointment.end_time ? `-${appointment.end_time}` : ""}
+                  </p>
+                  <h3 className="mt-1 line-clamp-2 font-bold text-ink">{appointment.title}</h3>
+                  {appointment.memo && <p className="mt-1 line-clamp-2 text-sm text-ink/60">{appointment.memo}</p>}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <Empty text="時間が決まっている予定はまだありません。" />
+          )}
+          <details className="rounded-xl border border-mist bg-white p-3">
+            <summary className="min-h-10 cursor-pointer list-none text-sm font-bold text-clay">＋ 予定を追加</summary>
+            <form onSubmit={onSaveAppointment} className="mt-3 grid gap-2">
+              <input name="date" type="date" defaultValue={journalDate} className="input min-h-11 py-2 text-sm" />
+              <div className="grid grid-cols-2 gap-2">
+                <input name="start_time" type="time" required defaultValue="10:00" className="input min-h-11 py-2 text-sm" aria-label="開始時刻" />
+                <input name="end_time" type="time" className="input min-h-11 py-2 text-sm" aria-label="終了時刻" />
+              </div>
+              <input name="title" required placeholder="予定名" className="input min-h-11 py-2 text-sm" />
+              <input name="memo" placeholder="メモ任意" className="input min-h-11 py-2 text-sm" />
+              <button type="submit" className="secondary-button w-full">
+                <Plus className="h-4 w-4" /> 予定を保存
+              </button>
+            </form>
+          </details>
+        </div>
+      </Panel>
+
+      <Panel title="今日やること" icon={ListChecks}>
+        <HomeTodayPanel
+          suggestion={suggestion}
+          todayTasks={todayTasks}
+          tasks={tasks}
+          dreams={dreams}
+          goals={goals}
+          weeklyGoals={weeklyGoals}
+          onComplete={onComplete}
+          onPlanToday={onPlanToday}
+          onOpenTodayPlan={onOpenTodayPlan}
+          onEdit={onEditTask}
+          onReschedule={onRescheduleTask}
+        />
+      </Panel>
+
+      <Panel title="メモ・気づき" icon={PenLine}>
+        <form onSubmit={onSaveNote} className="space-y-3">
+          <Field label="メモ">
+            <textarea name="memo" rows={3} defaultValue={reflection?.dream_progress_text} placeholder="思いついたこと、電話内容、買うものなど" className="input" />
+          </Field>
+          <Field label="気づき">
+            <textarea name="insight_text" rows={3} defaultValue={reflection?.insight_text} placeholder="今日やってみて気づいたこと" className="input" />
+          </Field>
+          <button type="submit" className="primary-button w-full">
+            保存
+          </button>
+        </form>
+      </Panel>
+
+      <TodayCompletedPanel
+        records={todayCompletionRecords}
+        tasks={tasks}
+        dreams={dreams}
+        goals={goals}
+        onUndo={onUndo}
+        onEditTask={onEditTask}
+        onUpdateTime={onUpdateTime}
+      />
+      <button type="button" className="secondary-button w-full" onClick={onRolloverRequest}>
+        翌日に切り替える
+      </button>
+    </div>
+  );
+}
+
+function WeeklyDiaryPage({
+  weekStart,
+  weekEnd,
+  monthlyGoals,
+  weeklyGoals,
+  tasks,
+  appointments,
+  completionRecords,
+  onOpenWeekPlan,
+  onOpenDay
+}: {
+  weekStart: string;
+  weekEnd: string;
+  monthlyGoals: Goal[];
+  weeklyGoals: Goal[];
+  tasks: Task[];
+  appointments: Appointment[];
+  completionRecords: TaskCompletionRecord[];
+  onOpenWeekPlan: () => void;
+  onOpenDay: (date: string) => void;
+}) {
+  const days = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
+  return (
+    <div className="space-y-4">
+      <section className="rounded-2xl border border-white/80 bg-white/88 p-4 shadow-soft">
+        <p className="text-xs font-bold text-moss">週間手帳</p>
+        <h1 className="mt-1 text-xl font-bold text-ink">
+          {weekStart}〜{weekEnd}
+        </h1>
+        <div className="mt-3 rounded-xl bg-leaf/10 p-3">
+          <p className="text-xs font-bold text-moss">今月の目標</p>
+          <p className="mt-1 line-clamp-2 text-sm font-bold text-ink">{monthlyGoals[0]?.title ?? "今月の目標は未設定です"}</p>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-moss">今週の目標</p>
+            <p className="mt-1 line-clamp-2 text-sm font-bold text-ink">{weeklyGoals[0]?.title ?? "新しい1週間が始まりました"}</p>
+          </div>
+          <button type="button" className="mini-button shrink-0" onClick={onOpenWeekPlan}>
+            {weeklyGoals.length > 0 ? "見直す" : "決める"}
+          </button>
+        </div>
+      </section>
+      <div className="space-y-3">
+        {days.map((date) => {
+          const dayAppointments = appointments.filter((appointment) => appointment.date === date);
+          const dayTasks = tasks
+            .filter((task) => task.status !== "archived" && task.due_date === date && !isTaskCompletedOn(task.id, date, completionRecords))
+            .slice(0, 4);
+          return (
+            <button key={date} type="button" className="tap-highlight w-full rounded-2xl border border-mist bg-white/88 p-3 text-left shadow-sm" onClick={() => onOpenDay(date)}>
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-bold text-ink">{journalDateLabel(date).replace(/^\d+年/, "")}</h2>
+                <span className="rounded-full bg-mist px-2 py-1 text-xs font-bold text-moss">
+                  予定{dayAppointments.length} / タスク{dayTasks.length}
+                </span>
+              </div>
+              <div className="mt-2 space-y-1 text-sm leading-6 text-ink/65">
+                {dayAppointments.slice(0, 2).map((appointment) => (
+                  <p key={appointment.id} className="line-clamp-1">
+                    {appointment.start_time} {appointment.title}
+                  </p>
+                ))}
+                {dayTasks.slice(0, 2).map((task) => (
+                  <p key={task.id} className="line-clamp-1">
+                    □ {task.title}
+                  </p>
+                ))}
+                {dayAppointments.length === 0 && dayTasks.length === 0 && <p>予定・タスクなし</p>}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MonthlyDiaryPage({
+  journalDate,
+  yearGoals,
+  monthlyGoals,
+  tasks,
+  appointments,
+  monthStart,
+  monthEnd,
+  onCreateMonth,
+  onOpenDay
+}: {
+  journalDate: string;
+  yearGoals: Goal[];
+  monthlyGoals: Goal[];
+  tasks: Task[];
+  appointments: Appointment[];
+  monthStart: string;
+  monthEnd: string;
+  onCreateMonth: () => void;
+  onOpenDay: (date: string) => void;
+}) {
+  const dates = monthDates(monthStart, monthEnd);
+  return (
+    <div className="space-y-4">
+      <section className="rounded-2xl border border-white/80 bg-white/88 p-4 shadow-soft">
+        <p className="text-xs font-bold text-moss">月間手帳</p>
+        <h1 className="mt-1 text-xl font-bold text-ink">{monthTitle(journalDate)}</h1>
+        <div className="mt-3 rounded-xl bg-leaf/10 p-3">
+          <p className="text-xs font-bold text-moss">今年の目標</p>
+          <p className="mt-1 line-clamp-2 text-sm font-bold text-ink">{yearGoals[0]?.title ?? "今年の目標は未設定です"}</p>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-mist/60 p-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-moss">今月の目標</p>
+            <p className="mt-1 line-clamp-2 text-sm font-bold text-ink">{monthlyGoals[0]?.title ?? "今月の計画を立てましょう"}</p>
+          </div>
+          <button type="button" className="mini-button shrink-0 bg-white" onClick={onCreateMonth}>
+            決める
+          </button>
+        </div>
+      </section>
+      <section className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {dates.map((date) => {
+          const dayAppointments = appointments.filter((appointment) => appointment.date === date);
+          const importantTasks = tasks.filter((task) => task.status !== "archived" && task.due_date === date && task.important);
+          const deadlineTasks = tasks.filter((task) => task.status !== "archived" && task.due_date === date && !task.important);
+          return (
+            <button key={date} type="button" className="tap-highlight min-h-28 rounded-2xl border border-mist bg-white/88 p-3 text-left shadow-sm" onClick={() => onOpenDay(date)}>
+              <p className={`text-sm font-bold ${date === journalDate ? "text-clay" : "text-ink"}`}>
+                {new Date(`${date}T00:00:00`).getDate()}日
+              </p>
+              <div className="mt-2 space-y-1 text-xs leading-5 text-ink/65">
+                {dayAppointments.length > 0 && <p className="line-clamp-1">予定 {dayAppointments[0].title}</p>}
+                {importantTasks.length > 0 && <p className="line-clamp-1">重要 {importantTasks[0].title}</p>}
+                {deadlineTasks.length > 0 && <p className="line-clamp-1">締切 {deadlineTasks[0].title}</p>}
+                {dayAppointments.length + importantTasks.length + deadlineTasks.length === 0 && <p className="text-ink/35">余白</p>}
+              </div>
+            </button>
+          );
+        })}
+      </section>
+    </div>
+  );
+}
+
+function YearlyDiaryPage({
+  journalDate,
+  dreams,
+  twentyYearGoals,
+  tenYearGoals,
+  yearGoals,
+  monthlyGoals,
+  appointments,
+  onOpenMonth,
+  onCreateYear
+}: {
+  journalDate: string;
+  dreams: Dream[];
+  twentyYearGoals: Goal[];
+  tenYearGoals: Goal[];
+  yearGoals: Goal[];
+  monthlyGoals: Goal[];
+  appointments: Appointment[];
+  onOpenMonth: (date: string) => void;
+  onCreateYear: () => void;
+}) {
+  const year = new Date(`${journalDate}T00:00:00`).getFullYear();
+  const activeDream = dreams.find((dream) => dream.status === "active");
+  return (
+    <div className="space-y-4">
+      <section className="rounded-2xl border border-white/80 bg-white/88 p-4 shadow-soft">
+        <p className="text-xs font-bold text-moss">年間手帳</p>
+        <h1 className="mt-1 text-xl font-bold text-ink">{year}年</h1>
+        <div className="mt-3 rounded-xl bg-dawn/15 p-3">
+          <p className="text-xs font-bold text-clay">理想の未来</p>
+          <p className="mt-1 line-clamp-2 text-sm font-bold text-ink">{activeDream?.title ?? "理想の未来を登録すると、年の方針を思い出せます。"}</p>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <CompactGoalBlock label="20年後" goal={twentyYearGoals[0]} />
+          <CompactGoalBlock label="10年後" goal={tenYearGoals[0]} />
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-leaf/10 p-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-moss">今年の目標</p>
+            <p className="mt-1 line-clamp-2 text-sm font-bold text-ink">{yearGoals[0]?.title ?? "今年の目標は未設定です"}</p>
+          </div>
+          <button type="button" className="mini-button shrink-0 bg-white" onClick={onCreateYear}>
+            決める
+          </button>
+        </div>
+      </section>
+      <section className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {Array.from({ length: 12 }, (_, index) => {
+          const monthDate = `${year}-${String(index + 1).padStart(2, "0")}-01`;
+          const monthGoals = monthlyGoals.filter((goal) => sameMonth(goal.period_start ?? goal.deadline ?? "", monthDate) || sameMonth(goal.period_end ?? "", monthDate));
+          const monthAppointmentCount = appointments.filter((appointment) => sameMonth(appointment.date, monthDate)).length;
+          return (
+            <button key={monthDate} type="button" className="tap-highlight min-h-28 rounded-2xl border border-mist bg-white/88 p-3 text-left shadow-sm" onClick={() => onOpenMonth(monthDate)}>
+              <p className="text-sm font-bold text-ink">{index + 1}月</p>
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-ink/65">{monthGoals[0]?.title ?? "月目標なし"}</p>
+              {monthAppointmentCount > 0 && <p className="mt-2 text-xs font-bold text-moss">予定 {monthAppointmentCount}件</p>}
+            </button>
+          );
+        })}
+      </section>
+    </div>
+  );
+}
+
+function CompactGoalBlock({ label, goal }: { label: string; goal?: Goal }) {
+  return (
+    <div className="rounded-xl bg-mist/60 p-3">
+      <p className="text-xs font-bold text-moss">{label}</p>
+      <p className="mt-1 line-clamp-2 text-sm font-bold text-ink">{goal?.title ?? "未設定"}</p>
+    </div>
   );
 }
 

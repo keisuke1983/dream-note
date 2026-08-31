@@ -144,6 +144,18 @@ create table if not exists public.task_completion_records (
   unique(user_id, task_id, completion_date)
 );
 
+create table if not exists public.appointments (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade not null,
+  title text not null,
+  date date not null,
+  start_time time not null,
+  end_time time,
+  memo text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.motivation_cards (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references auth.users(id) on delete cascade not null,
@@ -182,6 +194,7 @@ alter table public.today_ai_suggestions enable row level security;
 alter table public.weekly_ai_reviews enable row level security;
 alter table public.daily_reflections enable row level security;
 alter table public.task_completion_records enable row level security;
+alter table public.appointments enable row level security;
 alter table public.motivation_cards enable row level security;
 
 create policy "profiles owner access" on public.profiles
@@ -212,6 +225,9 @@ create policy "daily reflections owner access" on public.daily_reflections
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 create policy "task completion records owner access" on public.task_completion_records
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy "appointments owner access" on public.appointments
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 create policy "motivation cards owner access" on public.motivation_cards
